@@ -74,6 +74,7 @@ import json
 import os
 import re
 import sys
+import time
 from collections import Counter, defaultdict
 
 DS_LO = 0x02000000
@@ -861,8 +862,11 @@ def analyse(src: str):
         else:
             mixed.extend(ds_args)
 
-    # 4. Functions in CALLEES: casts of their address parameters.
-    for name, ent in CALLEES.items():
+    # 4. Functions in CALLEES: casts of their address parameters.  A
+    # definition may carry the entry's address name (src/matched) or one of
+    # its aliases (aletheia's src/game names the SDK functions).
+    named = [(n, e) for k, e in CALLEES.items() for n in (k,) + tuple(e["aliases"])]
+    for name, ent in named:
         for u in re.finditer(r"\b%s\s*\(" % re.escape(name), m):
             open_ = u.end() - 1
             close = _match_fwd(m, open_)
@@ -1897,6 +1901,22 @@ def _write_atomic(path, text):
     tmp = "%s.%d.tmp" % (path, os.getpid())
     with open(tmp, "wb") as f:
         f.write(data)
+    # On Windows the replace fails while another run has the file open (it
+    # is reading it, or replacing it with the same bytes): wait and retry,
+    # and stop once the file holds these bytes.
+    for attempt in range(50):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            try:
+                with open(path, "rb") as f:
+                    if f.read() == data:
+                        os.remove(tmp)
+                        return
+            except OSError:
+                pass
+            time.sleep(0.05 * (attempt + 1) if attempt < 10 else 0.5)
     os.replace(tmp, path)
 
 

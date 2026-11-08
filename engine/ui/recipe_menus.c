@@ -40,6 +40,7 @@
 #include "ui.h"
 #include "kit.h"
 #include "ui_lang.h"
+#include "dsmem.h"
 #include "assets.h"
 #include "input.h"
 #include "textbox.h"
@@ -1467,7 +1468,7 @@ static void save_run(EidosUiCtx *c, EidosUiView *view, const EidosUiFrame *in)
         /* the game's own bar: ten pieces light as the write advances
          * (ReportWork barPiecesLit 0x124); the fill eases toward it */
         void *rw = rdp(s.sub, 0x20);
-        int lit = ((uintptr_t)rw >= 0x02000000u && (uintptr_t)rw < 0x02400000u) ? (int)rd16(rw, 0x124) : 0;
+        int lit = bw_ds_game_ptr(rw) ? (int)rd16(rw, 0x124) : 0;
         int goal;
 
         /* the game lights ten pieces for twice the data a save writes, so
@@ -1507,7 +1508,7 @@ static void save_run(EidosUiCtx *c, EidosUiView *view, const EidosUiFrame *in)
             void *pt = SYSTEM_DATA_GetPlayTime(sc);
 
             if (pt != NULL) {
-                snprintf(buf, sizeof buf, "Last saved %u/%u/20%02u  %02u:%02u",
+                snprintf(buf, sizeof buf, ui_trf("Last saved %u/%u/20%02u  %02u:%02u"),
                          PLAYTIME_GetStampMonth(pt), PLAYTIME_GetStampDay(pt),
                          PLAYTIME_GetStampYear(pt), PLAYTIME_GetStampHour(pt),
                          PLAYTIME_GetStampMinute(pt));
@@ -1597,9 +1598,7 @@ typedef struct CardInfo {
  * card's structs hold. */
 static int plausible(const void *p)
 {
-    uintptr_t a = (uintptr_t)p;
-
-    return a >= 0x02000000u && a < 0x02400000u && (a & 3u) == 0u;
+    return bw_ds_game_ptr(p) && ((uintptr_t)p & 3u) == 0u;
 }
 
 static int card_read(CardInfo *ci)
@@ -2439,7 +2438,7 @@ static void wireless_run(EidosUiCtx *c, EidosUiView *view, const EidosUiFrame *i
         const char *sub = off ? "Not available." : tiles[i].what;
 
         if (i == 0 && mode == 2 && INTRUDE_COMM_CountEventPeers != NULL) {
-            snprintf(buf, sizeof buf, "%d in the Entralink.", INTRUDE_COMM_CountEventPeers(comm));
+            snprintf(buf, sizeof buf, ui_trf("%d in the Entralink."), INTRUDE_COMM_CountEventPeers(comm));
             sub = buf;
         } else if (i == 0 && mode == 3) {
             sub = "Someone invites you.";
@@ -3866,7 +3865,7 @@ static void catch_run(EidosUiCtx *c, EidosUiView *view, const EidosUiFrame *in)
         ui_mon_front_draw(c, (u16)species, 0, in->frame, px + 8, py + 20, 110, 110);
         ui_species_name(species, name, (int)sizeof name);
         ui_species_types(species, &t1, &t2);
-        snprintf(num, sizeof num, "No. %03d", species);
+        snprintf(num, sizeof num, ui_trf("No. %03d"), species);
         ui_text(c, px + 128, py + 36, num, UI_GREY, IN_SHADOW, UI_FONT_SMALL, 1);
         ui_text(c, px + 128, py + 50, name, UI_WHITE, IN_SHADOW, UI_FONT_LARGE, 2);
         if (t1 >= 0) ui_type_tag(c, px + 128, py + 90, 56, t1);
@@ -3970,10 +3969,11 @@ static void relearn_run(EidosUiCtx *c, EidosUiView *view, const EidosUiFrame *in
     if (first < 0) first = 0;
     for (i = 0; i < RL_ROWS && first + i < count; i++) {
         int row = first + i, mv = moves[row], st, dy, type;
-        const char *nm = ui_move_name_modern(mv);
+        const char *game = ui_game_text(2, 203, (u32)mv);
+        const char *nm = ui_move_name_modern(mv, game);
 
         st = in_tile(c, mx + 12, my + IN_HEAD + 30 * i, lw - 12, 26, row == sel, &dy);
-        snprintf(name, sizeof name, "%s", nm != NULL ? nm : ui_game_text(2, 203, (u32)mv));
+        snprintf(name, sizeof name, "%s", nm != NULL ? nm : game);
         ui_text(c, mx + 24, my + IN_HEAD + 30 * i + dy + ui_text_y(26, UI_FONT_LARGE), name, UI_WHITE, IN_SHADOW,
                 UI_FONT_LARGE, 1);
         type = WAZA_TOOL_GetParam != NULL ? (int)WAZA_TOOL_GetParam((u32)mv, 0) : 0;
@@ -3993,23 +3993,35 @@ static void relearn_run(EidosUiCtx *c, EidosUiView *view, const EidosUiFrame *in
     y = my + IN_HEAD;
     if (sel >= 0 && sel < count) {
         int mv = moves[sel], pw, ac, pp;
+        int px[3] = { 10, 90, 150 }, vx[3] = { 50, 116, 166 }, j;
         char desc[400];
 
         pw = WAZA_TOOL_GetParam != NULL ? (int)WAZA_TOOL_GetParam((u32)mv, 3) : 0;
         ac = WAZA_TOOL_GetParam != NULL ? (int)WAZA_TOOL_GetParam((u32)mv, 4) : 0;
         pp = WAZA_TOOL_GetParam != NULL ? (int)WAZA_TOOL_GetParam((u32)mv, 5) : 0;
+        /* the three numbers at their places in a panel of 186 or more;
+         * in a narrower one (a tablet's 4:3 canvas) in three equal columns,
+         * each value just after its label, so PP stays inside */
+        if (rw < 186) {
+            static const char *const labs[3] = { "POWER", "ACC", "PP" };
+
+            for (j = 0; j < 3; j++) {
+                px[j] = 8 + j * (rw - 12) / 3;
+                vx[j] = px[j] + ui_text_w(labs[j], UI_FONT_SMALL) + 3;
+            }
+        }
         in_panel(c, rx, y, rw, RL_ROWS * 30 - 34);
-        ui_text(c, rx + 10, y + 6, "POWER", UI_GREY, IN_SHADOW, UI_FONT_SMALL, 1);
+        ui_text(c, rx + px[0], y + 6, "POWER", UI_GREY, IN_SHADOW, UI_FONT_SMALL, 1);
         snprintf(line, sizeof line, "%s", pw > 1 ? "" : "---");
         if (pw > 1) snprintf(line, sizeof line, "%d", pw);
-        ui_text(c, rx + 50, y + 3, line, UI_WHITE, IN_SHADOW, UI_FONT_LARGE, 1);
-        ui_text(c, rx + 90, y + 6, "ACC", UI_GREY, IN_SHADOW, UI_FONT_SMALL, 1);
+        ui_text(c, rx + vx[0], y + 3, line, UI_WHITE, IN_SHADOW, UI_FONT_LARGE, 1);
+        ui_text(c, rx + px[1], y + 6, "ACC", UI_GREY, IN_SHADOW, UI_FONT_SMALL, 1);
         snprintf(line, sizeof line, "%s", "---");
         if (ac > 0 && ac <= 100) snprintf(line, sizeof line, "%d", ac);
-        ui_text(c, rx + 116, y + 3, line, UI_WHITE, IN_SHADOW, UI_FONT_LARGE, 1);
-        ui_text(c, rx + 150, y + 6, "PP", UI_GREY, IN_SHADOW, UI_FONT_SMALL, 1);
+        ui_text(c, rx + vx[1], y + 3, line, UI_WHITE, IN_SHADOW, UI_FONT_LARGE, 1);
+        ui_text(c, rx + px[2], y + 6, "PP", UI_GREY, IN_SHADOW, UI_FONT_SMALL, 1);
         snprintf(line, sizeof line, "%d", pp);
-        ui_text(c, rx + 166, y + 3, line, UI_WHITE, IN_SHADOW, UI_FONT_LARGE, 1);
+        ui_text(c, rx + vx[2], y + 3, line, UI_WHITE, IN_SHADOW, UI_FONT_LARGE, 1);
         ui_fill(c, rx + 8, y + 20, rw - 16, 1, UI_EDGE, 255);
         flatten(ui_game_text(2, 202, (u32)mv), desc, (int)sizeof desc);
         wrapped(c, rx + 10, y + 26, rw - 20, 13, UI_FONT_SMALL, desc, UI_LIGHT, IN_SHADOW, 6);
@@ -4294,7 +4306,7 @@ static void ending_run(EidosUiCtx *c, EidosUiView *view, const EidosUiFrame *in)
             name[0] = '\0';
             ui_species_name(sp, name, (int)sizeof name);
             ui_text(c, px2 + 44, y + 3, name, UI_WHITE, IN_SHADOW, UI_FONT_LARGE, 1);
-            snprintf(lvt, sizeof lvt, "Lv. %d", lv);
+            snprintf(lvt, sizeof lvt, ui_trf("Lv. %d"), lv);
             ui_text(c, px2 + 44, y + 19, lvt, UI_GREY, IN_SHADOW, UI_FONT_SMALL, 1);
         }
     } else {
@@ -4479,7 +4491,7 @@ static void trade_mon(EidosUiCtx *c, void *mon, int x, int y, u32 frame)
     name[0] = '\0';
     ui_species_name(sp, name, (int)sizeof name);
     ui_text(c, x + 34, y + 2, name, UI_WHITE, IN_SHADOW, UI_FONT_LARGE, 1);
-    snprintf(lvt, sizeof lvt, "Lv. %d", lv);
+    snprintf(lvt, sizeof lvt, ui_trf("Lv. %d"), lv);
     ui_text(c, x + 34, y + 18, lvt, UI_GREY, IN_SHADOW, UI_FONT_SMALL, 1);
 }
 
@@ -5281,10 +5293,13 @@ static void ut_card(EidosUiCtx *c, int x, int y, int w, int h, const UtMon *m, i
     for (i = 0; i < 4 && iy + 12 <= y + h - 3; i++) {
         int one = menu_room > 0, cwid = one ? w - 12 - menu_room - 4 : (w - 12) / 2 - 1;
         int cx = one ? ix : ix + (i % 2) * (cwid + 2);
-        const char *mv = m->moves[i] > 0 ? ui_move_name_modern(m->moves[i]) : "-----";
+        const char *mv = "-----";
 
-        if (mv == NULL) {
-            mv = ui_game_text(2, 203, (u32)m->moves[i]);
+        if (m->moves[i] > 0) {
+            const char *game = ui_game_text(2, 203, (u32)m->moves[i]);
+            const char *modern = ui_move_name_modern(m->moves[i], game);
+
+            mv = modern != NULL ? modern : game;
         }
         ui_panel(c, cx, iy, cwid, 12, UI_CUT_TL | UI_CUT_BR, 2, UI_BODY, UI_EDGE, 255);
         ui_text(c, cx + 4, iy + ui_text_y(12, UI_FONT_SMALL), mv,
@@ -5608,9 +5623,7 @@ static const EidosUiRecipe recipe_union_trade = {
  * the proc on top. */
 static int ds_main_ptr(const void *p)
 {
-    uintptr_t a = (uintptr_t)p;
-
-    return a >= 0x02000000u && a < 0x02400000u;
+    return bw_ds_game_ptr(p);
 }
 
 static int vs_match(void)

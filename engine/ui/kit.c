@@ -50,6 +50,7 @@
 
 #include <stdlib.h>
 #include <stdio.h>
+#include <ctype.h>
 #include <string.h>
 
 #include "ui_lang.h"
@@ -198,6 +199,11 @@ static void put(EidosUiCtx *c, int x, int y, u32 rgb, int a)
         return;
     }
     blend_at(c->canvas, px, py, rgb, a);
+}
+
+void ui_pixel(EidosUiCtx *c, int x, int y, u32 rgb, int a)
+{
+    put(c, x, y, rgb, a);
 }
 
 void ui_fill(EidosUiCtx *c, int x, int y, int w, int h, u32 rgb, int a)
@@ -979,14 +985,50 @@ static const struct { u16 id; const char *name; } k_modern_moves[] = {
     { 265, "Smelling Salts" }, { 297, "Feather Dance" }, { 320, "Grass Whistle" },
 };
 
-const char *ui_move_name_modern(int id)
-{
-    size_t i;
+/* The game's spellings that are more than the modern ones squeezed. */
+static const struct { u16 id; const char *old; } k_old_moves[] = {
+    { 136, "Hi Jump Kick" }, { 185, "Faint Attack" }, { 265, "SmellingSalt" },
+};
 
+/* a and b the same letters, spaces, hyphens and capitals aside */
+static int same_squeezed(const char *a, const char *b)
+{
+    for (;;) {
+        while (*a == ' ' || *a == '-') a++;
+        while (*b == ' ' || *b == '-') b++;
+        if (*a == '\0' || *b == '\0') {
+            return *a == *b;
+        }
+        if (tolower((unsigned char)*a) != tolower((unsigned char)*b)) {
+            return 0;
+        }
+        a++;
+        b++;
+    }
+}
+
+const char *ui_move_name_modern(int id, const char *game_name)
+{
+    size_t i, k;
+
+    if (game_name == NULL) {
+        return NULL;
+    }
     for (i = 0; i < sizeof(k_modern_moves) / sizeof(k_modern_moves[0]); i++) {
-        if (k_modern_moves[i].id == id) {
+        if (k_modern_moves[i].id != id) {
+            continue;
+        }
+        /* only over the English cartridge's own word: another language's
+         * name, or a translation mod's, stays the game's */
+        if (same_squeezed(game_name, k_modern_moves[i].name)) {
             return k_modern_moves[i].name;
         }
+        for (k = 0; k < sizeof(k_old_moves) / sizeof(k_old_moves[0]); k++) {
+            if (k_old_moves[k].id == id && strcmp(game_name, k_old_moves[k].old) == 0) {
+                return k_modern_moves[i].name;
+            }
+        }
+        return NULL;
     }
     return NULL;
 }
@@ -1507,7 +1549,7 @@ void ui_party_row(EidosUiCtx *c, int x, int y, int w, int slot, const char *name
                   int selected)
 {
     const int h = 30;
-    char num[16], lv[16], hpn[24];
+    char num[16], lv[48], hpn[24];
     int tw, hw, nx;
 
     num[0] = (char)('1' + slot);
@@ -1527,26 +1569,31 @@ void ui_party_row(EidosUiCtx *c, int x, int y, int w, int slot, const char *name
     if (icon != NULL) {
         ui_image(c, x + 16 + (22 - icon->w) / 2, y + (h - icon->h) / 2, icon, 1);
     }
-    nx = ui_text(c, x + 40, y + 1, name, UI_WHITE, SHADOW_DARK, UI_FONT_LARGE, 1);
-    ui_gender(c, nx + 3, y + 1, gender, UI_FONT_LARGE);
+    {
+        /* a long name in a narrow row (a tablet's canvas) would run into
+         * the level: the small letters then, and cut before the level */
+        int font = UI_FONT_LARGE, room = w - 40 - 9 - 2 - 8;
+        EidosUiRect saved;
+
+        if (level > 0) {
+            room -= ui_text_w(ui_tr("Lv."), UI_FONT_SMALL) +
+                    ui_text_w(level >= 100 ? "100" : level >= 10 ? "50" : "5", UI_FONT_SMALL);
+        }
+        if (ui_text_w(name, UI_FONT_LARGE) > room) {
+            font = UI_FONT_SMALL;
+        }
+        ui_push(c, 0, 0, &saved);
+        ui_clip(c, x + 40, y, room + 8, h);
+        nx = ui_text(c, x + 40, y + (font == UI_FONT_LARGE ? 1 : 3), name, UI_WHITE, SHADOW_DARK, font, 1);
+        ui_gender(c, nx + 3, y + (font == UI_FONT_LARGE ? 1 : 3), gender, font);
+        ui_pop(c, 0, 0, &saved);
+    }
     if (level <= 0) {
         return;                         /* an Egg: no level and no HP      */
     }
     {
-        int n = level, i = 0, j;
-        char t[12];
-
-        lv[0] = 'L';
-        lv[1] = 'v';
-        lv[2] = '.';
-        do {
-            t[i++] = (char)('0' + n % 10);
-            n /= 10;
-        } while (n > 0 && i < 8);
-        for (j = 0; j < i; j++) {
-            lv[3 + j] = t[i - 1 - j];
-        }
-        lv[3 + i] = '\0';
+        /* "Lv." in the game's language, then the level */
+        snprintf(lv, sizeof lv, "%s%d", ui_tr("Lv."), level);
     }
     tw = ui_text_w(lv, UI_FONT_SMALL);
     ui_text(c, x + w - 9 - tw, y + 3, lv, UI_LIGHT, SHADOW_DARK, UI_FONT_SMALL, 1);
@@ -1583,31 +1630,13 @@ void ui_plate(EidosUiCtx *c, int x, int y, int w, const char *name, int gender,
 {
     int player = exp_den > 0;
     int h = player ? 32 : 24, nx, tw, i, j;
-    char lv[16], t[12];
-    int n = level;
+    char lv[48], t[12];
 
     ui_panel(c, x, y, w, h, UI_CUT_TR | UI_CUT_BL, 6, UI_BODY, UI_EDGE, 225);
     nx = ui_text(c, x + 8, y + 1, name, UI_WHITE, SHADOW_DARK, UI_FONT_LARGE, 1);
     ui_gender(c, nx + 3, y + 1, gender, UI_FONT_LARGE);
-    {
-        /* "Lv." in the game's language ("N." in French), then the level */
-        const char *pre = ui_tr("Lv.");
-        int pl = (int)strlen(pre);
-
-        if (pl > 6) {
-            pl = 6;
-        }
-        memcpy(lv, pre, (size_t)pl);
-        i = 0;
-        do {
-            t[i++] = (char)('0' + n % 10);
-            n /= 10;
-        } while (n > 0 && i < 8);
-        for (j = 0; j < i; j++) {
-            lv[pl + j] = t[i - 1 - j];
-        }
-        lv[pl + i] = '\0';
-    }
+    /* "Lv." in the game's language ("N." in French), then the level */
+    snprintf(lv, sizeof lv, "%s%d", ui_tr("Lv."), level);
     tw = ui_text_w(lv, UI_FONT_SMALL);
     ui_text(c, x + w - 10 - tw, y + 2, lv, UI_LIGHT, SHADOW_DARK, UI_FONT_SMALL, 1);
     ui_text(c, x + 8, y + 14, "HP", UI_LIME, SHADOW_DARK, UI_FONT_SMALL, 1);
@@ -1651,6 +1680,25 @@ void ui_plate(EidosUiCtx *c, int x, int y, int w, const char *name, int gender,
             }
         }
     }
+}
+
+/* A plate's condition badge, left of its level (ui_plate's first row);
+ * badge as ui_status_badge counts (-1: none). */
+void ui_plate_status(EidosUiCtx *c, int x, int y, int w, int level, int badge)
+{
+    char lv[48];
+    int tw, bw;
+
+    if (badge < 0) {
+        return;
+    }
+    snprintf(lv, sizeof lv, "%s%d", ui_tr("Lv."), level);
+    tw = ui_text_w(lv, UI_FONT_SMALL);
+    bw = ui_text_w(k_status_name[badge], UI_FONT_SMALL) + 8;
+    if (bw < 24) {
+        bw = 24;
+    }
+    ui_status_badge(c, x + w - 10 - tw - 4 - bw, y + 3, badge);
 }
 
 void ui_cmd_button(EidosUiCtx *c, int x, int y, int w, int h, const char *label,

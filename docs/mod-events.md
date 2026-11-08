@@ -150,13 +150,20 @@ Notes from the callers:
 | `battle.escape` | `BTL_SERVER_FLOW_TryEscape` 0x021BD60C | ov093 | the escape fails as a failed run: "Can't escape!" and the turn is spent | - |
 | `battle.move` | `BTL_SERVER_FLOW_RunMoveUsedEvent` 0x021C1A10 | ov093 | - | - |
 | `battle.damage` | the return of `BTL_SERVER_FLOW_CalcMoveDamage` 0x021C1E74 | ov093 | - | the amount; the payload names attacker, target, move and the target's HP before |
-| `battle.faint` | `BTL_SERVER_FLOW_ProcFaintedPoke` 0x021C4F64 | ov093 | - | - |
+| `battle.faint` | the return of `BTL_SERVER_FLOW_ProcFaintedPoke` 0x021C4F64, when it answers 1 (a Pokemon has just fainted; the server asks about every Pokemon a move touched) | ov093 | - | - |
 | `catch.attempt` | `BTL_SERVER_FLOW_TryThrowBall` 0x021CBA40 | ov093 | the ball is blocked as in a trainer battle: the block message shows, the ball stays in the bag, the turn is spent; the payload names the ball and the target's species and level | catch rate (`BTL_SERVER_FLOW_GetBallCatchRate` 0x021CBD48) |
 | `catch.result` | the return of `BTL_SERVER_FLOW_CalcCaptureShakes` 0x021CBB34 | ov093 | - | - |
 | `battle.end` | `EVENT_BATTLE_NotifyBattleEnd` 0x0216EE7C | ov010 | - | - |
 | `battle.trainer_mon` | the rows that build a trainer battle's setup (`battle.start`), once per opposing member | - | the member leaves the party (the last stays) | species, level, item, moves, ability, form |
-| `battle.exp` | the return of `BTL_SERVER_FLOW_CalcPartyExpShares` 0x021CB2D4 (ov093), before `mon.exp` | - | nobody gains | the scale of every share |
-| `whiteout` | `BTL_CLIENT_StepShowBlackoutMessages` 0x021D1960 (ov093); `SCRIPT_SYS_RunRecoverScript` 0x02158A20 (ov010) | - | - | - |
+| `battle.exp` | the return of `BTL_SERVER_FLOW_CalcPartyExpShares` 0x021CB2D4 (ov093), before `mon.exp` | - | nobody gains | the scale of every share, the bench's share |
+| `battle.ai` (version 5) | the returns of `BTL_CLIENT_TakeTrainerItemToUse` 0x021D3DC4 (item stage), `BTL_CLIENT_ChooseAiSwitchTarget` 0x021CFBF0 (switch stage), both ov093, and `TR_AI_GetChosenMove` 0x02188134 (ov096, move stage) | - | - | the item, the switch, the move and its target |
+| `battle.ai_replace` (version 5) | the return of `BTL_CLIENT_SortMonsByMovePower` 0x021D09E0 inside `BTL_CLIENT_ChooseReplacementsAuto` 0x021D0D50 (ov093) | - | - | the order of the Pokemon sent in |
+| `battle.ability` (version 5) | `BTL_SERVER_FLOW_PushAbilityPopupIn` 0x021C5A1C (ov093) | - | - | - |
+| `battle.stat` (version 5) | `BTL_SERVER_FLOW_ChangeStatStage` 0x021C5A8C (ov093) | - | - | - |
+| `battle.held_item` (version 5) | the return of `BTL_SERVER_FLOW_ProcHeldItemActivate` 0x021C2128 (ov093), when the item took effect | - | - | - |
+| `battle.status` (version 5) | the return of `BTL_SERVER_FLOW_TryApplySick` 0x021C27A0 (ov093) | - | - | - |
+| `battle.turn` (version 5) | `BTL_SERVER_FLOW_StartTurn` 0x021BBC44 (ov093) | - | - | - |
+| `whiteout` | `SCRCMD_NETWORK_CreateWhiteOutEvent` 0x0215F6E8 (ov010): every whiteout after a lost wild or trainer battle (`in_battle` 1); the mod API's own `whiteout()` raises none | - | - | - |
 
 Notes from the callers:
 

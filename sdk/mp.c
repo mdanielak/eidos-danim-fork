@@ -49,6 +49,11 @@
 #include "save.h"
 #include "save_slots.h"
 
+/* A label built from values in a mod's words (engine/ui/ui_lang.h ui_trf);
+ * the English when the interface is not linked in. */
+extern const char *ui_trf(const char *fmt) __attribute__((weak, format_arg(1)));
+#define TRF(s) (ui_trf != NULL ? ui_trf(s) : (s))
+
 #include <sys/stat.h>
 
 #ifdef _WIN32
@@ -103,7 +108,8 @@ static struct {
     char       blocker[256];
     char       wait[200];
     char       reason[96];
-    int        started;             /* the first start, not yet taken */
+    char       reason_shown[160];   /* the reason in the player's language */
+    int        started;            /* the first start, not yet taken */
     char       host_id[33];         /* the host's lasting id (SPEC 12)  */
     char       fp[33];              /* a joiner: who it is to this host */
     int        in_game;             /* a joiner: its game runs the save the host sent */
@@ -325,9 +331,14 @@ static int mods_match(const char *want, const char *have, char *why,
             }
             if (!found || !same) {
                 if (why != NULL) {
-                    snprintf(why, why_size, "mod %.*s %s", (int)ns_len, p,
-                             !found ? (pass == 0 ? "missing" : "not on the host")
-                                    : "is another multiplayer version");
+                    char ns[64];
+
+                    snprintf(ns, sizeof(ns), "%.*s", (int)ns_len, p);
+                    snprintf(why, why_size,
+                             !found ? (pass == 0 ? TRF("mod %s missing")
+                                                 : TRF("mod %s not on the host"))
+                                    : TRF("mod %s is another multiplayer version"),
+                             ns);
                 }
                 return 0;
             }
@@ -1338,7 +1349,7 @@ static int host_ready(void)
         if (!p->connected) {
             if (g_mp.roster_set) {
                 snprintf(g_mp.blocker, sizeof(g_mp.blocker),
-                         "waiting for %s", p->name);
+                         TRF("waiting for %s"), p->name);
                 return 0;
             }
             continue;
@@ -1346,13 +1357,13 @@ static int host_ready(void)
         someone = 1;
         if (p->game == 0) {
             snprintf(g_mp.blocker, sizeof(g_mp.blocker),
-                     "no answer from %s", p->name);
+                     TRF("no answer from %s"), p->name);
             return 0;
         }
         if (strcmp(p->version, EIDOS_VERSION) != 0) {
             /* every player runs the same eidos (docs/distribution.md) */
             snprintf(g_mp.blocker, sizeof(g_mp.blocker),
-                     "%s: eidos %s (you %s)", p->name, p->version, EIDOS_VERSION);
+                     TRF("%s: eidos %s (you %s)"), p->name, p->version, EIDOS_VERSION);
             return 0;
         }
         if (p->fp[0] != '\0') {
@@ -1369,8 +1380,8 @@ static int host_ready(void)
             }
             if ((c == 'B' || c == 'W') && c != p->game) {
                 snprintf(g_mp.blocker, sizeof(g_mp.blocker),
-                         "%s's save is %s", p->name,
-                         c == 'W' ? "White" : "Black");
+                         TRF("%s's save is %s"), p->name,
+                         c == 'W' ? TRF("White") : TRF("Black"));
                 return 0;
             }
         }
@@ -1380,7 +1391,7 @@ static int host_ready(void)
         }
     }
     if (!someone) {
-        snprintf(g_mp.blocker, sizeof(g_mp.blocker), "nobody has joined");
+        snprintf(g_mp.blocker, sizeof(g_mp.blocker), "%s", TRF("nobody has joined"));
         return 0;
     }
     return 1;
@@ -1459,7 +1470,7 @@ static void host_on_join(u32 peer)
     if (g_net->peer_name == NULL ||
         g_net->peer_name(peer, p->name, (u32)sizeof(p->name)) != 0 ||
         p->name[0] == '\0') {
-        snprintf(p->name, sizeof(p->name), "player %u", (unsigned)peer);
+        snprintf(p->name, sizeof(p->name), TRF("player %u"), (unsigned)peer);
     }
     host_send_id(peer);
     if (g_mp.state == BW_MP_GRACE && host_ready()) {
@@ -2775,8 +2786,8 @@ int bw_mp_start(void)
     u32 i;
 
     if (!g_mp.host || (g_mp.state != BW_MP_LOBBY && g_mp.state != BW_MP_PAUSED)) {
-        snprintf(g_mp.blocker, sizeof(g_mp.blocker), "only the host starts, "
-                 "from the lobby or a pause");
+        snprintf(g_mp.blocker, sizeof(g_mp.blocker), "%s",
+                 TRF("only the host starts, from the lobby or a pause"));
         return -1;
     }
     if (!host_ready()) {
@@ -2845,15 +2856,18 @@ int bw_mp_paused(void)
 
 const char *bw_mp_wait_text(void)
 {
+    char names[sizeof(g_mp.wait)];
     u32 i;
-    size_t at;
+    size_t at = 0;
 
     switch (g_mp.state) {
     case BW_MP_HOST_GONE:
-        snprintf(g_mp.wait, sizeof(g_mp.wait), "Waiting for the host to come back");
+        snprintf(g_mp.wait, sizeof(g_mp.wait), "%s",
+                 TRF("Waiting for the host to come back"));
         return g_mp.wait;
     case BW_MP_RECONNECTING:
-        snprintf(g_mp.wait, sizeof(g_mp.wait), "Connection lost. Joining again...");
+        snprintf(g_mp.wait, sizeof(g_mp.wait), "%s",
+                 TRF("Connection lost. Joining again..."));
         return g_mp.wait;
     case BW_MP_PAUSED:
         break;
@@ -2861,7 +2875,7 @@ const char *bw_mp_wait_text(void)
         g_mp.wait[0] = '\0';
         return g_mp.wait;
     }
-    at = (size_t)snprintf(g_mp.wait, sizeof(g_mp.wait), "Waiting for players:");
+    names[0] = '\0';
     for (i = 0; i < BW_MP_PLAYERS_MAX; i++) {
         const BwMpPlayer *p = &g_mp.players[i];
         int w;
@@ -2869,24 +2883,39 @@ const char *bw_mp_wait_text(void)
         if (p->peer == 0 || !p->on_roster || p->connected) {
             continue;
         }
-        w = snprintf(g_mp.wait + at, sizeof(g_mp.wait) - at, " %s", p->name);
-        if (w < 0 || (size_t)w >= sizeof(g_mp.wait) - at) {
+        w = snprintf(names + at, sizeof(names) - at, "%s%s", at > 0 ? " " : "", p->name);
+        if (w < 0 || (size_t)w >= sizeof(names) - at) {
             break;
         }
         at += (size_t)w;
     }
     if (g_mp.host && host_ready()) {
-        snprintf(g_mp.wait, sizeof(g_mp.wait),
-                 "Everyone is back. Press START to play.");
-    } else if (!g_mp.host && at == strlen("Waiting for players:")) {
-        snprintf(g_mp.wait, sizeof(g_mp.wait), "Waiting for the host to start");
+        snprintf(g_mp.wait, sizeof(g_mp.wait), "%s",
+                 TRF("Everyone is back. Press START to play."));
+    } else if (!g_mp.host && at == 0) {
+        snprintf(g_mp.wait, sizeof(g_mp.wait), "%s",
+                 TRF("Waiting for the host to start"));
+    } else {
+        snprintf(g_mp.wait, sizeof(g_mp.wait), TRF("Waiting for players: %s"), names);
     }
     return g_mp.wait;
 }
 
 const char *bw_mp_end_reason(void)
 {
+    /* the reason with the code in it is translated as a template; the
+     * others are whole labels the interface translates when it draws them */
+    if (strncmp(g_mp.reason, "the relay restarted: the new code is ", 37) == 0) {
+        snprintf(g_mp.reason_shown, sizeof(g_mp.reason_shown),
+                 TRF("the relay restarted: the new code is %s"), g_mp.code);
+        return g_mp.reason_shown;
+    }
     return g_mp.reason;
+}
+
+int bw_mp_relay_restarted(void)
+{
+    return strncmp(g_mp.reason, "the relay", 9) == 0;
 }
 
 u32 bw_mp_player_count(void)

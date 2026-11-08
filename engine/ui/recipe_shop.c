@@ -24,6 +24,8 @@
 
 #include "ui.h"
 #include "kit.h"
+#include "ui_lang.h"
+#include "dsmem.h"
 #include "input.h"
 #include "overlay.h"
 
@@ -162,13 +164,11 @@ static void units_to_utf8(const u16 *u, char *out, int max)
 
 #define SCRIPT_WORK_MAGIC 0x3643Fu
 
-/* A DS main memory address (the DS address space is identity-mapped): the
- * words read on the way are not always pointers. */
+/* A pointer into the game's main memory, wherever the host keeps it
+ * (sdk/dsmem.h): the words read on the way are not always pointers. */
 static int ds_ptr(const void *p)
 {
-    uintptr_t a = (uintptr_t)p;
-
-    return a >= 0x02000000u && a < 0x02400000u;
+    return bw_ds_game_ptr(p);
 }
 
 static int g_log;
@@ -619,7 +619,7 @@ static void list_row(EidosUiCtx *c, int x, int y, int w, int h, const UiImage *i
 static void price_text(const Shop *s, u32 price, char *out, int max)
 {
     if (s->bp) {
-        snprintf(out, (size_t)max, "%u BP", price);
+        snprintf(out, (size_t)max, ui_trf("%u BP"), price);
     } else {
         snprintf(out, (size_t)max, YEN "%u", price);
     }
@@ -792,7 +792,7 @@ static void run_shop(EidosUiCtx *c, EidosUiView *view, const EidosUiFrame *in)
         ui_text(c, tx + 15, my + 6 + ui_text_y(hdr - 3, UI_FONT_LARGE), s.bp ? "BATTLE POINTS" : "BUY",
                 UI_GREY, UI_EDGE, UI_FONT_LARGE, 1);
         if (s.bp) {
-            snprintf(money, sizeof money, "%u BP", currency(&s));
+            snprintf(money, sizeof money, ui_trf("%u BP"), currency(&s));
         } else {
             snprintf(money, sizeof money, YEN "%u", currency(&s));
         }
@@ -900,7 +900,7 @@ static void run_shop(EidosUiCtx *c, EidosUiView *view, const EidosUiFrame *in)
             ty0 += 18;
             if (!s.tm && MYITEM_SAVEDATA_GetItemQuantity != NULL && rdp(t, T_BAG) != NULL) {
                 hav = (int)MYITEM_SAVEDATA_GetItemQuantity(rdp(t, T_BAG), (u32)shown, rd16(t, T_HEAP));
-                snprintf(buf, sizeof buf, "In bag \xC3\x97%d", hav);
+                snprintf(buf, sizeof buf, ui_trf("In bag \xC3\x97%d"), hav);
                 ui_text(c, det_x + (det_w - ui_text_w(buf, UI_FONT_SMALL)) / 2, ty0, buf, ACCENT,
                         SHADOW, UI_FONT_SMALL, 1);
                 ty0 += 14;

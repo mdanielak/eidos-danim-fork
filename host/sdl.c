@@ -76,6 +76,12 @@ static void handle_drop(u32 h)
     }
 }
 
+/* The same table for the GPU imports (host/sdl_gpu.c): one handle space,
+ * so a window made here is the window SDL's GPU claims there. */
+u32 host_handle_of(void *p) { return handle_of(p); }
+void *host_handle_ptr(u32 h) { return handle_ptr(h); }
+void host_handle_drop(u32 h) { handle_drop(h); }
+
 /* ------------------------------------------------------------------ */
 /* Module memory                                                       */
 /* ------------------------------------------------------------------ */
@@ -141,7 +147,7 @@ static u32 str_interned(const char *s)
     return val[i];
 }
 
-enum { S_ERROR, S_DRIVER, S_RENDERER, S_KEYS, S_TEXT, S_DROP, S_DROP2 };
+enum { S_ERROR, S_DRIVER, S_RENDERER, S_KEYS, S_TEXT, S_DROP, S_DROP2, S_MODE };
 
 /* ------------------------------------------------------------------ */
 /* Init, hints, time                                                   */
@@ -203,6 +209,19 @@ u32 w2c_env_SDL_GetCurrentVideoDriver(struct w2c_env *e)
     return str_to_module(S_DRIVER, SDL_GetCurrentVideoDriver());
 }
 
+/* The benchmark's notes (engine/frame/prof.h): the system and its cores. */
+u32 w2c_env_SDL_GetPlatform(struct w2c_env *e)
+{
+    (void)e;
+    return str_interned(SDL_GetPlatform());
+}
+
+u32 w2c_env_SDL_GetNumLogicalCPUCores(struct w2c_env *e)
+{
+    (void)e;
+    return (u32)SDL_GetNumLogicalCPUCores();
+}
+
 /* ------------------------------------------------------------------ */
 /* Displays and windows                                                */
 /* ------------------------------------------------------------------ */
@@ -219,6 +238,38 @@ u32 w2c_env_SDL_GetDisplayForWindow(struct w2c_env *e, u32 w)
 {
     (void)e;
     return SDL_GetDisplayForWindow((SDL_Window *)handle_ptr(w));
+}
+
+/* SDL_DisplayMode as the wasm32 module lays it out: eight 4-byte fields
+ * and the internal pointer, 4 bytes there. */
+typedef struct {
+    u32 displayID, format;
+    int32_t w, h;
+    float pixel_density, refresh_rate;
+    int32_t refresh_rate_numerator, refresh_rate_denominator;
+    u32 internal;
+} WDisplayMode;
+_Static_assert(sizeof(WDisplayMode) == 36, "wasm32 SDL_DisplayMode");
+
+u32 w2c_env_SDL_GetCurrentDisplayMode(struct w2c_env *e, u32 id)
+{
+    const SDL_DisplayMode *m = SDL_GetCurrentDisplayMode(id);
+    WDisplayMode w;
+
+    (void)e;
+    if (m == NULL) {
+        return 0;
+    }
+    w.displayID = m->displayID;
+    w.format = (u32)m->format;
+    w.w = m->w;
+    w.h = m->h;
+    w.pixel_density = m->pixel_density;
+    w.refresh_rate = m->refresh_rate;
+    w.refresh_rate_numerator = m->refresh_rate_numerator;
+    w.refresh_rate_denominator = m->refresh_rate_denominator;
+    w.internal = 0;
+    return to_module(S_MODE, &w, sizeof w);
 }
 
 u32 w2c_env_SDL_CreateWindow(struct w2c_env *e, u32 title, u32 w, u32 h, u64 flags)
@@ -518,6 +569,17 @@ u32 w2c_env_SDL_GL_CreateContext(struct w2c_env *e, u32 w)
 
     (void)e;
     c = SDL_GL_CreateContext((SDL_Window *)handle_ptr(w));
+#if defined(HOST_GL_ES_FALLBACK)
+    /* The Switch: Mesa's desktop OpenGL first (the shaders as they are, the
+     * GPU 3D with its anti-aliasing), OpenGL ES 3.0 when that fails. */
+    if (c == NULL) {
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, 0);
+        c = SDL_GL_CreateContext((SDL_Window *)handle_ptr(w));
+    }
+#endif
     if (c != NULL) {
         SDL_Rect safe;
         int ww = 0, wh = 0;
@@ -555,6 +617,17 @@ u32 w2c_env_SDL_GL_MakeCurrent(struct w2c_env *e, u32 w, u32 c)
 }
 
 u32 w2c_env_SDL_GL_SetSwapInterval(struct w2c_env *e, u32 n) { (void)e; return SDL_GL_SetSwapInterval((int)n); }
+u32 w2c_env_SDL_GL_GetSwapInterval(struct w2c_env *e, u32 out)
+{
+    int n = 0;
+    bool ok = SDL_GL_GetSwapInterval(&n);
+
+    (void)e;
+    if (out != 0) {
+        memcpy(host_ptr(out, 4), &n, 4);
+    }
+    return ok;
+}
 /* EIDOS_FPS: every 120 frames, the frames per second and how much of a
  * frame went to the game and its drawing calls (between swaps) and to the
  * swap itself (waiting for the GPU and the display). */

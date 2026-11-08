@@ -83,10 +83,15 @@ void eidos_ui_set_enabled(int on)
 int eidos_ui_scale(int win_w, int win_h)
 {
     /* the layouts need about 270 canvas rows (the menu's six buttons, the
-     * battle's plates and sheets): the largest whole scale that keeps them */
+     * battle's plates and sheets) and about 360 columns (a 4:3 window's
+     * width at that height): the largest whole scale that keeps both, so a
+     * window narrower than 4:3 (a tablet held upright) gets a smaller scale
+     * instead of panels cut off at its sides */
     int k = win_h / 270;
 
-    (void)win_w;
+    if (win_w / 360 < k) {
+        k = win_w / 360;
+    }
     return k < 1 ? 1 : k;
 }
 
@@ -574,10 +579,98 @@ extern void POKE_TOOL_SetPartyValue(void *pp, u32 paramId, uintptr_t value) __at
 extern void POKE_TOOL_CalcParam(void *pp) __attribute__((weak));
 extern void *POKE_TOOL_Create(u16 species, u16 level, u64 otId, u16 heapId) __attribute__((weak));
 extern u32 POKEPARTY_Add(void *party, const void *member) __attribute__((weak));
+extern u32 POKEPARTY_RemoveMember(void *party, s32 pos) __attribute__((weak));
 extern void *GAME_DATA_GetMyItem(const void *gd) __attribute__((weak));
+extern void GAME_DATA_SetSubscreenType(void *gd, u32 type) __attribute__((weak));
+extern void *BLOCK20_SAVEDATA_GetBlockFromSys(void *gd) __attribute__((weak));
+extern void CGEAR_SAVE_SetObtained(void *cgearSave, u8 value) __attribute__((weak));
 extern u32 MYITEM_SAVEDATA_AddItem(void *bag, u16 itemId, u16 quantity, u16 heapId) __attribute__((weak));
 #define DEBUG_PARAM_EXP 0x08u           /* POKE_TOOL_PARAM_EXP                  */
 #define DEBUG_FIELD_HEAP 0x15u          /* the field's heap                     */
+
+/* How many whiteouts the run has seen (sdk/mod_event_battle.c). */
+extern u32 bw_debug_whiteouts __attribute__((weak));
+
+/* The party's size while the field runs; -1 before. */
+static int debug_party_count(void)
+{
+    u8 *gs, *gd;
+    void *party;
+
+    if (&bw_dsref__GameSystemGlobal == NULL || GAME_DATA_GetMyParty == NULL || POKEPARTY_GetCount == NULL) {
+        return -1;
+    }
+    gs = *(u8 **)bw_dsref__GameSystemGlobal;
+    if (gs == NULL || *(void **)(gs + 0x20) == NULL || (gd = *(u8 **)(gs + 0x1C)) == NULL ||
+        (party = GAME_DATA_GetMyParty(gd)) == NULL) {
+        return -1;
+    }
+    return (int)POKEPARTY_GetCount(party);
+}
+
+/* EIDOS_DEBUG_WHEN (the party, the battle) and EIDOS_DEBUG_MOVE_WHEN (the
+ * moves) hold a test switch until the game is there, instead of a frame
+ * count: "party:N" the party has N members or more (the starter came:
+ * party:1), "whiteout" a whiteout has happened, in battle or in the field,
+ * "whiteout:N" N frames have passed since the first one, "whiteout-done"
+ * the whiteout's own script (the blackout, the nurse's or the mother's
+ * heal) has ended and the field runs with no event (A pressed after that
+ * would talk to the nurse again), "field:N" N frames have passed since the
+ * field first ran (past its fade-in, when the player can move: field:200).
+ * Without the variable the switch is open. */
+extern void *GAMESYSTEM_GetEvent(const void *gsys) __attribute__((weak));
+static int debug_when(const char *env)
+{
+    static u32 whiteout_frame, field_frame, busy_frame;
+    const char *w = getenv(env);
+    unsigned n = 0;
+    u32 now = bw_input_frame_number();
+    int field = debug_party_count() >= 0;
+
+    if (&bw_debug_whiteouts != NULL && bw_debug_whiteouts > 0u && whiteout_frame == 0u) {
+        whiteout_frame = now == 0u ? 1u : now;
+    }
+    if (field_frame == 0u && field) {
+        field_frame = now == 0u ? 1u : now;
+    }
+    if (!field || (GAMESYSTEM_GetEvent != NULL && &bw_dsref__GameSystemGlobal != NULL &&
+                   GAMESYSTEM_GetEvent(*(void **)bw_dsref__GameSystemGlobal) != NULL)) {
+        busy_frame = now;               /* no field yet, or an event runs */
+    }
+    if (w == NULL || *w == '\0') {
+        return 1;
+    }
+    if (strcmp(w, "whiteout-done") == 0) {
+        return whiteout_frame != 0u && busy_frame > whiteout_frame && now > busy_frame;
+    }
+    if (strncmp(w, "field", 5) == 0) {
+        (void)sscanf(w, "field:%u", &n);
+        return field_frame != 0u && now >= field_frame + n;
+    }
+    if (sscanf(w, "party:%u", &n) == 1) {
+        return debug_party_count() >= (int)n;
+    }
+    if (strncmp(w, "whiteout", 8) == 0) {
+        (void)sscanf(w, "whiteout:%u", &n);
+        return whiteout_frame != 0u && now >= whiteout_frame + n;
+    }
+    return 0;
+}
+
+/* EIDOS_DEBUG_A_UNTIL (a condition as EIDOS_DEBUG_WHEN's): A pressed every
+ * 20 frames from EIDOS_DEBUG_A_FROM (a frame, default 0) until the
+ * condition opens, through the battles and the texts of a scripted run. */
+static void debug_a_until(u32 frame)
+{
+    const char *from = getenv("EIDOS_DEBUG_A_FROM");
+
+    if (getenv("EIDOS_DEBUG_A_UNTIL") == NULL || (from != NULL && frame < (u32)strtoul(from, NULL, 10))) {
+        return;
+    }
+    if (!debug_when("EIDOS_DEBUG_A_UNTIL") && frame % 20u == 0u) {
+        eidos_ui_press(BW_KEY_A, 2);
+    }
+}
 
 static void debug_party(void)
 {
@@ -588,11 +681,11 @@ static void debug_party(void)
     u32 n, i, id;
     u16 lv;
 
-    if (list == NULL && getenv("EIDOS_DEBUG_ITEMS") != NULL) {
-        list = "";                      /* items alone */
+    if (list == NULL && (getenv("EIDOS_DEBUG_ITEMS") != NULL || getenv("EIDOS_DEBUG_PARTY_COUNT") != NULL)) {
+        list = "";                      /* items or the count alone */
     }
     if (done || list == NULL || &bw_dsref__GameSystemGlobal == NULL || GAME_DATA_GetMyParty == NULL
-        || POKE_TOOL_SetupPartyParam == NULL || POKEPARTY_GetMember == NULL) {
+        || POKE_TOOL_SetupPartyParam == NULL || POKEPARTY_GetMember == NULL || !debug_when("EIDOS_DEBUG_WHEN")) {
         return;
     }
     gs = *(u8 **)bw_dsref__GameSystemGlobal;
@@ -643,6 +736,17 @@ static void debug_party(void)
             list++;
         }
     }
+    /* EIDOS_DEBUG_PARTY_COUNT=N: the party keeps its first N members (a
+     * one-Pokemon party for the whiteout tests: A alone cannot pick the
+     * next Pokemon after a faint) */
+    if (getenv("EIDOS_DEBUG_PARTY_COUNT") != NULL && POKEPARTY_RemoveMember != NULL && POKEPARTY_GetCount != NULL) {
+        u32 keep = (u32)strtoul(getenv("EIDOS_DEBUG_PARTY_COUNT"), NULL, 10);
+
+        while (keep >= 1u && POKEPARTY_GetCount(party) > keep) {
+            (void)POKEPARTY_RemoveMember(party, (s32)POKEPARTY_GetCount(party) - 1);
+        }
+        fprintf(stderr, "eidos: debug party: %u member(s)\n", (unsigned)POKEPARTY_GetCount(party));
+    }
     /* EIDOS_DEBUG_ITEMS="item:count,...": into the bag */
     if (getenv("EIDOS_DEBUG_ITEMS") != NULL && GAME_DATA_GetMyItem != NULL && MYITEM_SAVEDATA_AddItem != NULL) {
         const char *m = getenv("EIDOS_DEBUG_ITEMS");
@@ -657,6 +761,29 @@ static void debug_party(void)
             if (*m != ',') break;
             m++;
         }
+    }
+    /* EIDOS_DEBUG_FLAGS="hex,hex": event flags set (0x961 and 0x962 give
+     * the field menu its POKEMON and POKEDEX buttons) */
+    if (getenv("EIDOS_DEBUG_FLAGS") != NULL && ZONEDATA_SetEventFlag != NULL && GAME_DATA_GetEventWork != NULL) {
+        const char *m = getenv("EIDOS_DEBUG_FLAGS");
+        unsigned flag;
+        int used;
+
+        while (sscanf(m, "%x%n", &flag, &used) == 1) {
+            ZONEDATA_SetEventFlag(GAME_DATA_GetEventWork(gd), (int)flag);
+            fprintf(stderr, "eidos: debug flag 0x%x set\n", flag);
+            m += used;
+            if (*m != ',') break;
+            m++;
+        }
+    }
+    /* EIDOS_DEBUG_CGEAR: the C-Gear obtained and on the bottom screen of
+     * the next field (a warp after it shows it) */
+    if (getenv("EIDOS_DEBUG_CGEAR") != NULL && GAME_DATA_SetSubscreenType != NULL
+        && CGEAR_SAVE_SetObtained != NULL && BLOCK20_SAVEDATA_GetBlockFromSys != NULL) {
+        CGEAR_SAVE_SetObtained(BLOCK20_SAVEDATA_GetBlockFromSys(gd), 1);
+        GAME_DATA_SetSubscreenType(gd, 0);
+        fprintf(stderr, "eidos: debug C-Gear\n");
     }
     /* EIDOS_DEBUG_MOVES="member:move:slot,...": teach moves */
     if (getenv("EIDOS_DEBUG_MOVES") != NULL && POKE_TOOL_SetMoveSlot != NULL) {
@@ -775,6 +902,144 @@ static void debug_warp(void)
     if (ev != NULL) {
         GAMESYSTEM_SetEvent(gs, ev);
         fprintf(stderr, "eidos: debug warp to zone %u (%.0f, %.0f, %.0f)\n", z, (double)x, (double)y, (double)zz);
+    }
+}
+
+/*
+ * Tests: EIDOS_DEBUG_CUTIN starts one of the game's field cut-ins (ov021
+ * FLD3D_CI) the way its script commands do, once the field has run 90
+ * frames with no event (after EIDOS_DEBUG_WARP's map change), or the frames
+ * a third number gives ("item 621 300"):
+ *   "item N"  a key item's (SCRCMD_StartFld3dCiByTable: the item's row of
+ *             the 17-row table; the port is told the item as the patched
+ *             command tells it)
+ *   "seq N"   a sequence by its id (SCRCMD_StartFld3dCi)
+ *   "mon P"   party member P's (SCRCMD_StartFld3dCiByVar: the field moves'
+ *             cut-in, Cut and the others)
+ */
+extern void *ov021_FIELDMAP_GetFld3dCi(void *fieldMap) __attribute__((weak));
+extern void *ov021_FLD3D_CI_StartSequence(void *gameSystem, void *ci, int sequenceId) __attribute__((weak));
+extern void *ov021_FLD3D_CI_StartPartyMemberSequence(void *gameSystem, void *ci, int partyPos) __attribute__((weak));
+extern void bw_ui_cutin_item(u32 item) __attribute__((weak));
+/* ov021's 17-row key table, through the pointers the build gives overlay
+ * data (rows of two u16: the item, then at +2 the sequence id) */
+extern void *bw_dsref_ov021_gFld3dCiKeyTable __attribute__((weak));
+
+static void debug_cutin(void)
+{
+    static int done, wait;
+    const char *at = getenv("EIDOS_DEBUG_CUTIN");
+    char kind[8];
+    unsigned n, quiet = 90;
+    u8 *gs;
+    void *ci, *ev = NULL;
+
+    if (done || at == NULL || &bw_dsref__GameSystemGlobal == NULL || GAMESYSTEM_SetEvent == NULL
+        || GAMESYSTEM_GetEvent == NULL || ov021_FIELDMAP_GetFld3dCi == NULL
+        || ov021_FLD3D_CI_StartSequence == NULL) {
+        return;
+    }
+    gs = *(u8 **)bw_dsref__GameSystemGlobal;
+    if (gs == NULL || *(void **)(gs + 0x20) == NULL || GAMESYSTEM_GetEvent(gs) != NULL) {
+        wait = 0;
+        return;
+    }
+    if (sscanf(at, "%7s %u %u", kind, &n, &quiet) < 2 || ++wait < (int)quiet) {
+        return;
+    }
+    if (getenv("EIDOS_DEBUG_WARP") != NULL && wait < 200) {
+        return;                         /* the warp first, then a settled field */
+    }
+    done = 1;
+    ci = ov021_FIELDMAP_GetFld3dCi(*(void **)(gs + 0x20));
+    if (ci == NULL) {
+        return;
+    }
+    if (strcmp(kind, "item") == 0 && &bw_dsref_ov021_gFld3dCiKeyTable != NULL
+        && bw_dsref_ov021_gFld3dCiKeyTable != NULL) {
+        const unsigned short *tab = (const unsigned short *)bw_dsref_ov021_gFld3dCiKeyTable;
+        int i;
+
+        for (i = 0; i < 17; i++) {
+            if (tab[i * 2] == n) {
+                ev = ov021_FLD3D_CI_StartSequence(gs, ci, (unsigned char)tab[i * 2 + 1]);
+                if (ev != NULL && bw_ui_cutin_item != NULL) {
+                    bw_ui_cutin_item(n);
+                }
+                break;
+            }
+        }
+    } else if (strcmp(kind, "seq") == 0) {
+        ev = ov021_FLD3D_CI_StartSequence(gs, ci, (int)(n & 0xFFu));
+    } else if (strcmp(kind, "mon") == 0 && ov021_FLD3D_CI_StartPartyMemberSequence != NULL) {
+        ev = ov021_FLD3D_CI_StartPartyMemberSequence(gs, ci, (int)(n & 0xFFu));
+    }
+    if (ev != NULL) {
+        GAMESYSTEM_SetEvent(gs, ev);
+    }
+    fprintf(stderr, "eidos: debug cut-in %s %u at input frame %u%s\n", kind, n,
+            (unsigned)bw_input_frame_number(), ev != NULL ? "" : ": not started");
+}
+
+/* Tests: EIDOS_DEBUG_WHERE=1 logs the zone and the place the player stands
+ * once the field has run 120 frames with no event, in the form
+ * EIDOS_DEBUG_WARP takes, so a test can start from the same spot with any
+ * save (GameData's player work: zone at +0, fx32 x y z at +4). */
+static void debug_where(void)
+{
+    static int done, wait;
+    u8 *gs, *gd;
+    const u8 *pw;
+    const s32 *p;
+
+    if (done || getenv("EIDOS_DEBUG_WHERE") == NULL || &bw_dsref__GameSystemGlobal == NULL
+        || GAMESYSTEM_GetEvent == NULL) {
+        return;
+    }
+    gs = *(u8 **)bw_dsref__GameSystemGlobal;
+    if (gs == NULL || *(void **)(gs + 0x20) == NULL || GAMESYSTEM_GetEvent(gs) != NULL) {
+        wait = 0;
+        return;
+    }
+    if (++wait < 120) {
+        return;
+    }
+    done = 1;
+    gd = *(u8 **)(gs + 0x1C);
+    pw = gd + 4 + 4 * 0x44;
+    p = (const s32 *)(pw + 4);
+    fprintf(stderr, "eidos: debug where: EIDOS_DEBUG_WARP=\"%u %.0f %.0f %.0f 1\"\n",
+            (unsigned)(pw[0] | (pw[1] << 8)), p[0] / 4096.0, p[1] / 4096.0, p[2] / 4096.0);
+}
+
+/* Tests: EIDOS_EVENT_LOG=1 logs the running game event's chain (each
+ * event's function, innermost first) whenever it changes, as offsets from
+ * GAMESYSTEM_GetEvent: `nm` on the program gives that function's address,
+ * and the sum names the event's.  To find which code runs a scene. */
+static void event_log(void)
+{
+    static uintptr_t last[4];
+    uintptr_t now[4] = { 0, 0, 0, 0 };
+    const u8 *gs, *ev;
+    int i;
+
+    if (getenv("EIDOS_EVENT_LOG") == NULL || &bw_dsref__GameSystemGlobal == NULL
+        || GAMESYSTEM_GetEvent == NULL) {
+        return;
+    }
+    gs = *(const u8 **)bw_dsref__GameSystemGlobal;
+    ev = gs != NULL ? (const u8 *)GAMESYSTEM_GetEvent(gs) : NULL;
+    for (i = 0; i < 4 && ev != NULL; i++) {
+        now[i] = *(const uintptr_t *)(ev + sizeof(void *));      /* GameEvent func */
+        ev = *(const u8 * const *)ev;                            /* parent */
+    }
+    if (memcmp(now, last, sizeof now) != 0) {
+        memcpy(last, now, sizeof now);
+        fprintf(stderr, "eidos: event at frame %u:", (unsigned)bw_input_frame_number());
+        for (i = 0; i < 4 && now[i] != 0; i++) {
+            fprintf(stderr, " %+ld", (long)(now[i] - (uintptr_t)GAMESYSTEM_GetEvent));
+        }
+        fprintf(stderr, "\n");
     }
 }
 
@@ -1164,10 +1429,17 @@ extern u16 ov010_FLDMMDL_GetDirDisp(const void *mmdl) __attribute__((weak));
 typedef struct DebugMove { u32 frame; int kind, dir, n, x, z; } DebugMove;
 enum { DM_FACE, DM_WALK, DM_TILE, DM_A };
 
+/* A direction: the word (up, down, left, right) or its letter (U D L R). */
 static int dm_dir(const char *s)
 {
-    return strncmp(s, "up", 2) == 0 ? 0 : strncmp(s, "down", 4) == 0 ? 1 : strncmp(s, "left", 4) == 0 ? 2
-         : strncmp(s, "right", 5) == 0 ? 3 : -1;
+    if (strncmp(s, "up", 2) == 0 || strncmp(s, "down", 4) == 0 || strncmp(s, "left", 4) == 0 ||
+        strncmp(s, "right", 5) == 0) {
+        return s[0] == 'u' ? 0 : s[0] == 'd' ? 1 : s[0] == 'l' ? 2 : 3;
+    }
+    if ((s[0] == 'U' || s[0] == 'D' || s[0] == 'L' || s[0] == 'R') && (s[1] == '\0' || s[1] == ':')) {
+        return s[0] == 'U' ? 0 : s[0] == 'D' ? 1 : s[0] == 'L' ? 2 : 3;
+    }
+    return -1;
 }
 
 static void debug_move(u32 frame)
@@ -1227,12 +1499,33 @@ static void debug_move(u32 frame)
             m->frame = f;
             if (f != 0xFFFFFFFFu && (m->kind == DM_A || m->kind == DM_TILE || m->dir >= 0)) {
                 nsteps++;
+            } else if (f != 0xFFFFFFFFu) {
+                fprintf(stderr, "eidos: debug move: no direction in '%s' (up, down, left, right or U D L R)\n", buf);
             }
             s += len;
             if (*s == ',') {
                 s++;
             }
         }
+    }
+    if (getenv("EIDOS_DEBUG_MOVE_TRACE") != NULL && frame % 500u == 0u) {
+        fprintf(stderr, "eidos: debug move trace: input frame %u, step %d of %d (at %u)\n", (unsigned)frame, cur,
+                nsteps, cur < nsteps ? (unsigned)steps[cur].frame : 0u);
+    }
+    /* EIDOS_DEBUG_MOVE_WHEN: the steps' frames count from when it opens */
+    if (getenv("EIDOS_DEBUG_MOVE_WHEN") != NULL) {
+        static int open;
+        static u32 base;
+
+        if (!open) {
+            if (!debug_when("EIDOS_DEBUG_MOVE_WHEN")) {
+                return;
+            }
+            open = 1;
+            base = frame;
+            fprintf(stderr, "eidos: debug move: %s at frame %u\n", getenv("EIDOS_DEBUG_MOVE_WHEN"), (unsigned)frame);
+        }
+        frame -= base;
     }
     if (cur >= nsteps || frame < steps[cur].frame) {
         return;
@@ -1311,6 +1604,7 @@ extern void *BTL_SETUP_Create(u32 heapId) __attribute__((weak));
 extern void *ov010_EVENT_BATTLE_CreateScriptedBattle(void *gsys, void *fieldMap, void *btlSetup, int returnImmediately,
                                                      int effectId) __attribute__((weak));
 extern int ov010_EVENT_TRAINER_IsDoubleBattle(int trainerId) __attribute__((weak));
+extern void *GAME_EVENT_GetWork(void *event) __attribute__((weak));
 extern void *ov010_EVENT_BATTLE_CreateEncounterTask(void *gsys, void *fieldMap, int rule, int partnerId,
                                                     int trainerId1, int trainerId2, int options)
     __attribute__((weak));
@@ -1353,7 +1647,7 @@ static void debug_battle(void)
     }
     gs = *(u8 **)bw_dsref__GameSystemGlobal;
     fm = gs != NULL ? *(void **)(gs + 0x20) : NULL;
-    if (fm == NULL || GAMESYSTEM_GetEvent(gs) != NULL) {
+    if (fm == NULL || GAMESYSTEM_GetEvent(gs) != NULL || !debug_when("EIDOS_DEBUG_WHEN")) {
         wait = 0;
         return;
     }
@@ -1375,6 +1669,15 @@ static void debug_battle(void)
         int dbl = ov010_EVENT_TRAINER_IsDoubleBattle != NULL && ov010_EVENT_TRAINER_IsDoubleBattle((int)a1);
 
         ev = ov010_EVENT_BATTLE_CreateEncounterTask(gs, fm, dbl ? 1 : 0, 0, (int)a1, 0, 0);
+        /* The encounter task is a script's (BattleTask.isScripted, +0x14,
+         * src/game/ov010/event_battle.c): on a loss it hands back to the
+         * trainer's script, which blacks the player out.  Started here with
+         * no script, a loss would leave no event and no field and the game
+         * ends (GAMESYSTEM_ProcEnd resets to the title).  As a wild
+         * encounter's task, it runs the whiteout itself. */
+        if (ev != NULL && GAME_EVENT_GetWork != NULL) {
+            *(u32 *)((u8 *)GAME_EVENT_GetWork(ev) + 0x14) = 0u;
+        }
     } else if (sscanf(what, "trainer %u", &a1) == 1 && BTL_SETUP_Create != NULL
                && ov021_FIELD_ENCOUNT_SetupTrainerBattle != NULL && ov010_EVENT_BATTLE_CreateScriptedBattle != NULL) {
         void *bs = BTL_SETUP_Create(4);
@@ -1406,7 +1709,7 @@ static void debug_battle(void)
     if (ev != NULL) {
         GAMESYSTEM_SetEvent(gs, ev);
         g_debug_battle_started = 1;
-        fprintf(stderr, "eidos: debug battle: %s\n", what);
+        fprintf(stderr, "eidos: debug battle: %s (input frame %u)\n", what, (unsigned)bw_input_frame_number());
     }
 }
 
@@ -1614,12 +1917,16 @@ void eidos_ui_game_frame(void)
     if (!eidos_ui_battle_only()) {
         debug_party();
         debug_warp();
+        debug_cutin();
+        debug_where();
+        event_log();
         debug_battle();
         debug_script();
         debug_open();
         debug_ltrade();
         debug_seek(bw_input_frame_number());
         debug_move(bw_input_frame_number());
+        debug_a_until(bw_input_frame_number());
     }
 
     for (i = 0; i < n; i++) {
@@ -2069,8 +2376,15 @@ void eidos_ui_frame(const EidosUiFrame *in, EidosUiView *view,
     if (r != NULL && (r->round_scale || g_ds_scale_req)) {
         /* round_scale: the window's height over 270, rounded; a scene that
          * shows the game's text (eidos_ui_want_ds_scale): the DS screen's
-         * own scale, so the letters are as big as the game's */
+         * own scale, so the letters are as big as the game's; neither
+         * wider than the window (the DS screen's 256 columns, the 360 of
+         * eidos_ui_scale) */
         int k = g_ds_scale_req ? in->win_h / 192 : (in->win_h + 135) / 270;
+        int kw = g_ds_scale_req ? in->win_w / 256 : (in->win_w + 180) / 360;
+
+        if (kw < k) {
+            k = kw;
+        }
 
         if (k > g_k) {
             g_k = k;

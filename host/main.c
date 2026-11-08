@@ -32,7 +32,9 @@
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
 #endif
-#if defined(__ANDROID__) || (defined(__APPLE__) && TARGET_OS_IPHONE)
+/* The Switch takes the phones' way too: no command line, a folder of its
+ * own (sdmc:/switch/eidos/), OpenGL ES and one screen (docs/consoles.md). */
+#if defined(__ANDROID__) || (defined(__APPLE__) && TARGET_OS_IPHONE) || defined(__SWITCH__)
 #define HOST_MOBILE 1
 #include <SDL3/SDL_main.h>
 #include <fcntl.h>
@@ -160,7 +162,24 @@ u64 w2c_eidos_tz_offset(struct w2c_eidos *e, u64 t)
     if (localtime_r(&tt, &lt) == NULL) {
         return 0;
     }
+#if defined(__SWITCH__)
+    {
+        /* newlib has no timegm: the local fields counted as UTC by hand
+         * (days from 1970 by the civil calendar) */
+        long long y = lt.tm_year + 1900LL, m = lt.tm_mon + 1, era, yoe, doy, doe, days;
+
+        y -= m <= 2;
+        era = (y >= 0 ? y : y - 399) / 400;
+        yoe = y - era * 400;
+        doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + lt.tm_mday - 1;
+        doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+        days = era * 146097 + doe - 719468;
+        return (u64)(days * 86400 + lt.tm_hour * 3600 + lt.tm_min * 60 + lt.tm_sec
+                     - (long long)tt);
+    }
+#else
     return (u64)(long long)(timegm(&lt) - tt);
+#endif
 #endif
 }
 
@@ -387,7 +406,9 @@ static char **mobile_args(int *argc)
      * screens also get a margin of 2% a side inside the safe area. */
     setenv("EIDOS_TOUCH_DEVICE", "1", 1);
     /* the 3D renderer's choices for OpenGL ES (engine/platform/plat_gl3d.c) */
+#if !defined(__SWITCH__)    /* the Switch tries desktop OpenGL first (host/sdl.c) */
     setenv("EIDOS_GL_ES", "1", 1);
+#endif
 #if defined(__ANDROID__)
     setenv("EIDOS_EDGE_MARGIN", "2", 1);
 #endif
@@ -408,7 +429,17 @@ static char **mobile_args(int *argc)
     if ((f = fopen(file, "r")) != NULL) {
         while (n < 63 && fgets(line, sizeof line, f) != NULL) {
             line[strcspn(line, "\r\n")] = 0;
-            if (line[0] != 0 && line[0] != '#') {
+            if (line[0] == '@' && line[1] == '/') {
+                /* "@/x": x in the app's folder, whose path a tool
+                 * outside the phone cannot know */
+                char *p = SDL_malloc(strlen(pref) + strlen(line));
+
+                if (p != NULL) {
+                    strcpy(p, pref);
+                    strcat(p, line + 2);
+                    argv[n++] = p;
+                }
+            } else if (line[0] != 0 && line[0] != '#') {
                 argv[n++] = SDL_strdup(line);
             }
         }
@@ -416,11 +447,32 @@ static char **mobile_args(int *argc)
     }
     argv[n] = NULL;
     *argc = n;
-#if !defined(__ANDROID__)
-    host_ios_view_setup();
-#endif
-    /* the DS screens side by side are wider than tall: landscape only */
+    {
+        /* a profile folder named in args.txt (tests, tools/bench.py's
+         * runs) is made by the app, as its own one is */
+        int i;
+
+        for (i = 1; i + 1 < n; i++) {
+            if (strcmp(argv[i], "--profile-dir") == 0 && argv[i + 1] != prof) {
+                /* one level at a time: iOS refuses the walk up its
+                 * sandbox's parents that a whole-path create makes */
+                snprintf(line, sizeof line, "%s/saves", argv[i + 1]);
+                if (!SDL_CreateDirectory(argv[i + 1]) || !SDL_CreateDirectory(line)) {
+                    fprintf(stderr, "eidos: cannot make %s: %s\n", line, SDL_GetError());
+                }
+            }
+        }
+    }
+    /* a phone plays landscape only; an iPad turns both ways (the
+     * one-screen layout fits a tall window, ios/Info.plist.in) */
     SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
+#if defined(__APPLE__)
+    host_ios_view_setup();
+    if (host_ios_is_pad()) {
+        SDL_SetHint(SDL_HINT_ORIENTATIONS,
+                    "LandscapeLeft LandscapeRight Portrait PortraitUpsideDown");
+    }
+#endif
     return argv;
 }
 #endif
@@ -504,6 +556,24 @@ static int host_run(int argc, char **argv)
     g_wasi.argc = argc;
     g_wasi.argv = argv;
     wasm2c_game_instantiate(&g_game, &g_eidos, &g_env, &g_wasi);
+#if defined(HOST_MEMORY_BUDGET_MB) && HOST_MEMORY_BUDGET_MB > 0
+    {
+        /* Explicit bounds checks (EIDOS_HOST_BOUNDS_CHECKS: a console has
+         * no room for wasm2c's 8 GiB of guard pages): the memory is a heap
+         * block that a grow may move, and the SDL surfaces made from module
+         * pixels (host/sdl.c) must not move.  It is grown to its whole
+         * budget here, before anything points into it, so it never grows
+         * again (the module's malloc fails past the budget). */
+        uint64_t want = (uint64_t)HOST_MEMORY_BUDGET_MB * 1024u * 1024u / 65536u;
+
+        if (want > g_game.w2c_memory.pages &&
+            wasm_rt_grow_memory(&g_game.w2c_memory, want - g_game.w2c_memory.pages) == (uint64_t)-1) {
+            fprintf(stderr, "eidos: the module's memory cannot have %d MiB\n", HOST_MEMORY_BUDGET_MB);
+            return 1;
+        }
+        g_game.w2c_memory.max_pages = g_game.w2c_memory.pages;
+    }
+#endif
     /* a trap ends the program in host_trap (host/CMakeLists.txt) */
     w2c_game_0x5Fstart(&g_game);
     wasm2c_game_free(&g_game);

@@ -31,7 +31,32 @@ export type ModInfo = {
   order: number;
   enabled: boolean;
   hasManifest: boolean;
+  catalogId: string | null;
+  version: string | null;
+  icon: ModIcon | null;
 };
+
+/// A mod's icon: a game item's or a species' picture from the player's ROM,
+/// or the mod's own PNG.
+export type ModIcon = { item?: number; species?: number; png?: number[] };
+
+export type CatalogMod = {
+  id: string;
+  name: string;
+  version: string;
+  author: string;
+  description: string;
+  official: boolean;
+  multiplayer: boolean;
+  hasCode: boolean;
+  games: string[];
+  tags: string[];
+  size: number;
+  icon: ModIcon | null;
+  index: number;
+};
+
+export type Catalog = { mods: CatalogMod[]; errors: { entry: string; error: string }[] };
 
 export type PackageInfo = { name: string; files: number; bytes: number };
 
@@ -98,6 +123,28 @@ export function speciesArt(species: number, game: string): Promise<string | null
   }
   return p;
 }
+/// An item's bag icon, drawn from a ROM in the library.
+const itemCache = new Map<number, Promise<string | null>>();
+export function itemArt(item: number): Promise<string | null> {
+  let p = itemCache.get(item);
+  if (!p) {
+    p = invoke<number[] | null>("item_art", { item })
+      .then((b) => (b ? URL.createObjectURL(new Blob([new Uint8Array(b)], { type: "image/png" })) : null))
+      .catch(() => null);
+    itemCache.set(item, p);
+  }
+  return p;
+}
+
+/// The picture URL of a mod's icon; null when there is none to draw.
+export function modIconArt(icon: ModIcon | null, game: string): Promise<string | null> {
+  if (!icon) return Promise.resolve(null);
+  if (icon.png) return Promise.resolve(URL.createObjectURL(new Blob([new Uint8Array(icon.png)], { type: "image/png" })));
+  if (icon.item != null) return itemArt(icon.item);
+  if (icon.species != null) return speciesArt(icon.species, game);
+  return Promise.resolve(null);
+}
+
 /// The player's trainer picture (Hilbert or Hilda), drawn from a ROM of the
 /// game, as a picture URL; null without such a ROM.
 const playerCache = new Map<string, Promise<string | null>>();
@@ -204,6 +251,8 @@ export const modsSetEnabled = (profile: string, folder: string, enabled: boolean
 export const modsRemove = (profile: string, folder: string) => invoke<void>("mods_remove", { profile, folder });
 export const modsInspect = (path: string) => invoke<PackageInfo>("mods_inspect", { path });
 export const modsAdd = (profile: string, path: string) => invoke<string>("mods_add", { profile, path });
+export const catalogList = () => invoke<Catalog>("catalog_list");
+export const catalogInstall = (profile: string, index: number) => invoke<string>("catalog_install", { profile, index });
 export const openFolder = (what: "root" | "profile" | "mods" | "saves", profile?: string) =>
   invoke<void>("open_folder", { what, profile: profile ?? null });
 export const getSettings = () => invoke<SettingsView>("get_settings");

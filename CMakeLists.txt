@@ -17,7 +17,7 @@
 #
 
 cmake_minimum_required(VERSION 3.16)
-project(eidos VERSION 0.2.0 LANGUAGES C)
+project(eidos VERSION 0.2.4 LANGUAGES C)
 
 # The version players and the lobby see (docs/distribution.md).  A release
 # build (EIDOS_RELEASE=ON, the release workflow) is the plain number; any
@@ -348,11 +348,25 @@ else()
     # is one of them: it reads a file's size through fstat, and a struct
     # stat laid out the DS way puts st_size four bytes off the one the
     # runtime wrote (a 256 MiB cartridge read as 2^60 bytes).
-    if((WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 4) OR CMAKE_SYSTEM_NAME STREQUAL "WASI")
+    # The Vita's ARM EABI aligns them to 8 too and is handled as wasm32 is.
+    set(_eidos_pack4 OFF)
+    if(CMAKE_SYSTEM_NAME STREQUAL "WASI" OR VITA)
+        set(_eidos_pack4 ON)
+    endif()
+    if((WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 4) OR _eidos_pack4)
         # (the wasm32 build has no such flag: sdk/wasm_layout.h does it)
-        if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
+        if(_eidos_pack4)
             add_compile_options("SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/sdk/wasm_layout.h"
                                 -Wno-pragma-pack)
+            if(VITA)
+                # The Vita's compiler sizes an enum to its values (1 byte
+                # for most); the DS's makes every enum 4 bytes, and the
+                # game's records (some read straight from its files) hold
+                # them.  The files that talk to SDL3 and the C library keep
+                # the system's own size below, as its libraries were built.
+                add_compile_options(-fno-short-enums)
+                add_link_options("LINKER:--no-enum-size-warning")
+            endif()
         else()
             add_compile_options(-mno-align-double)
         endif()
@@ -371,9 +385,13 @@ else()
              ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_picker.c
              ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_settings.c
              ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_wizard.c)
-        if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
+        if(_eidos_pack4)
             set_property(SOURCE ${_eidos_native_align} APPEND PROPERTY
                 COMPILE_DEFINITIONS BW_WASM_NATIVE_LAYOUT=1)
+            if(VITA)
+                set_property(SOURCE ${_eidos_native_align} APPEND PROPERTY
+                    COMPILE_OPTIONS -fshort-enums)
+            endif()
             # the port's own sources (not the game's): sdk/wasm_layout.h
             # keeps the C library's structs natural for them
             file(GLOB_RECURSE _eidos_port_sources
@@ -579,6 +597,7 @@ set(BW_SDK_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/sdk/mod_title.c     # title menu hook state (docs/hooks.md)
     ${CMAKE_CURRENT_SOURCE_DIR}/sdk/ui_text.c       # the one-screen text boxes and the talk balloons
     ${CMAKE_CURRENT_SOURCE_DIR}/sdk/battle_fixed.c  # the place's move for an effect script's fixed points
+    ${CMAKE_CURRENT_SOURCE_DIR}/sdk/battle_yesno.c  # the battle's yes / no answers kept for the one-screen interface
     ${CMAKE_CURRENT_SOURCE_DIR}/sdk/field_fade.c  # the door fade-in's step (stubs/ov/patch_ov021_event_fieldmap_control.c)
     ${CMAKE_CURRENT_SOURCE_DIR}/sdk/mod_text.c           # the port's text path: the sink that shows a queued message
     ${CMAKE_CURRENT_SOURCE_DIR}/sdk/mod_script.c         # the script command hooks: the field VM and the battle effect VM
@@ -1115,11 +1134,16 @@ if(EIDOS_SDL_FOUND)
         ${CMAKE_CURRENT_SOURCE_DIR}/engine/platform/plat_gl3d.c
         ${CMAKE_CURRENT_SOURCE_DIR}/engine/platform/plat_gl2d.c
         ${CMAKE_CURRENT_SOURCE_DIR}/engine/platform/plat_gl_view.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/engine/platform/plat_gl_ops.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/engine/platform/plat_sdlgpu.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/engine/platform/plat_sdlgpu3d.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/engine/platform/plat_sdlgpu2d.c
         # the one-screen layout: scenes, recipes, the interface kit
         ${CMAKE_CURRENT_SOURCE_DIR}/engine/ui/ui.c
         ${CMAKE_CURRENT_SOURCE_DIR}/engine/ui/recipes.c
         ${CMAKE_CURRENT_SOURCE_DIR}/engine/ui/recipe_settings.c
         ${CMAKE_CURRENT_SOURCE_DIR}/engine/ui/recipe_title.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/engine/ui/recipe_mystery.c
         ${CMAKE_CURRENT_SOURCE_DIR}/engine/ui/recipe_battle.c
         ${CMAKE_CURRENT_SOURCE_DIR}/engine/ui/recipe_bag.c
         ${CMAKE_CURRENT_SOURCE_DIR}/engine/ui/recipe_shop.c
@@ -1129,6 +1153,7 @@ if(EIDOS_SDL_FOUND)
         ${CMAKE_CURRENT_SOURCE_DIR}/engine/ui/recipe_pc.c
         ${CMAKE_CURRENT_SOURCE_DIR}/engine/ui/recipe_input.c
         ${CMAKE_CURRENT_SOURCE_DIR}/engine/ui/recipe_field.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/engine/ui/item_show.c
         ${CMAKE_CURRENT_SOURCE_DIR}/engine/ui/choice_list.c
         ${CMAKE_CURRENT_SOURCE_DIR}/engine/ui/textbox.c
         ${CMAKE_CURRENT_SOURCE_DIR}/engine/ui/recipe_starter.c
@@ -1153,6 +1178,13 @@ if(EIDOS_SDL_FOUND)
         target_link_libraries(eidos_platform PUBLIC opengl32)
     elseif(APPLE)
         target_link_libraries(eidos_platform PUBLIC "-framework OpenGL")
+    elseif(VITA)
+        # vitaGL: OpenGL on the Vita's GXM, with its shader compiler
+        # (SceShaccCg, which the player's Vita provides; docs/consoles.md)
+        target_link_libraries(eidos_platform PUBLIC vitaGL vitashark SceShaccCgExt
+            mathneon taihen_stub SceShaccCg_stub SceKernelDmacMgr_stub SceGxm_stub
+            SceDisplay_stub SceAppMgr_stub SceCommonDialog_stub SceIme_stub
+            SceSysmodule_stub SceLibKernel_stub SceSblSsMgr_stub stdc++ m)
     else()
         target_link_libraries(eidos_platform PUBLIC GL)
     endif()
@@ -2759,6 +2791,20 @@ if(EIDOS_SDL_FOUND)
     set_tests_properties(test_settings PROPERTIES
         ENVIRONMENT "SDL_VIDEODRIVER=dummy;SDL_AUDIODRIVER=dummy;EIDOS_SETTINGS=${CMAKE_CURRENT_BINARY_DIR}/test_settings_default.ini")
 
+    # A mod's words for labels built from values (ui_trf).
+    add_executable(test_ui_trf
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ui_trf.c)
+    target_include_directories(test_ui_trf PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+    target_link_libraries(test_ui_trf PRIVATE eidos_platform)
+    if(EIDOS_SDL_RUNTIME)
+        add_custom_command(TARGET test_ui_trf POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${EIDOS_SDL_RUNTIME}" "$<TARGET_FILE_DIR:test_ui_trf>"
+            COMMENT "Copying SDL3.dll next to test_ui_trf")
+    endif()
+    add_test(NAME test_ui_trf COMMAND test_ui_trf)
+
     # The settings screen's model: tabs, rows, navigation, revert, commit.
     add_executable(test_settings_ui
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_settings_ui.c)
@@ -2774,6 +2820,23 @@ if(EIDOS_SDL_FOUND)
     add_test(NAME test_settings_ui COMMAND test_settings_ui)
     set_tests_properties(test_settings_ui PROPERTIES
         ENVIRONMENT "SDL_VIDEODRIVER=dummy;SDL_AUDIODRIVER=dummy;EIDOS_SETTINGS=${CMAKE_CURRENT_BINARY_DIR}/test_settings_ui_default.ini")
+
+    # Every text of the settings screen is in the ui_text template.
+    add_executable(test_settings_text
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_settings_text.c)
+    target_include_directories(test_settings_text PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+    target_link_libraries(test_settings_text PRIVATE eidos_platform)
+    if(EIDOS_SDL_RUNTIME)
+        add_custom_command(TARGET test_settings_text POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${EIDOS_SDL_RUNTIME}" "$<TARGET_FILE_DIR:test_settings_text>"
+            COMMENT "Copying SDL3.dll next to test_settings_text")
+    endif()
+    add_test(NAME test_settings_text COMMAND test_settings_text
+        ${CMAKE_CURRENT_SOURCE_DIR}/sdk/api/v5/ui_text_template.txt)
+    set_tests_properties(test_settings_text PROPERTIES
+        ENVIRONMENT "SDL_VIDEODRIVER=dummy;SDL_AUDIODRIVER=dummy;EIDOS_SETTINGS=${CMAKE_CURRENT_BINARY_DIR}/test_settings_text_default.ini")
 
     # The setup window under the dummy video driver, driven by scripted
     # events: an archive dropped and refused, a mouse click on "Choose
@@ -2822,6 +2885,18 @@ option(EIDOS_BOOT
 
 add_executable(eidos_boot ${CMAKE_CURRENT_SOURCE_DIR}/demo/eidos_boot.c)
 target_include_directories(eidos_boot PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/engine/platform)
+if(VITA)
+    # sdk/plat_crash.c catches calls to DS code addresses through kubridge
+    target_link_libraries(eidos PUBLIC kubridge_stub)
+    # VitaSDK's libdl (the native mod loader's dlsym, and SDL3's) needs the
+    # hash call of SceSblSsMgr, after it: the line's very end
+    set(CMAKE_C_STANDARD_LIBRARIES "${CMAKE_C_STANDARD_LIBRARIES} -lSceSblSsMgr_stub")
+    # the Vita's package: the signed program (eboot.bin) and the .vpk the
+    # system (or Vita3K) installs (docs/consoles.md)
+    include("$ENV{VITASDK}/share/vita.cmake" REQUIRED)
+    vita_create_self(eidos_boot.self eidos_boot UNSAFE)
+    vita_create_vpk(eidos.vpk EIDS00001 eidos_boot.self VERSION 01.00 NAME "eidos")
+endif()
 target_link_libraries(eidos_boot PRIVATE eidos)
 # SDL3.dll has to sit next to the program on Windows (as for eidos_view)
 if(EIDOS_SDL_RUNTIME)

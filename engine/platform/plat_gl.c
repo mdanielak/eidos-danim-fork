@@ -12,6 +12,78 @@
 #include "plat_gl_int.h"
 #include "settings.h"
 #include "pixel_filter.h"
+#include "prof.h"
+
+#if defined(__vita__)
+#include <stdint.h>
+/* vitaGL (VitaSDK): its own header would declare the GL calls a second
+ * time beside SDL_opengl.h, so the few calls used here are declared. */
+GLboolean vglInitWithCustomSizes(int pool_size, int width, int height, int ram_pool_size,
+                                 int cdram_pool_size, int phycont_pool_size, int cdlg_pool_size,
+                                 int msaa);
+void *vglGetProcAddress(const char *name);
+void vglSwapBuffers(GLboolean has_commondialog);
+void vglWaitVblankStart(GLboolean enable);
+void glBindAttribLocation(GLuint program, GLuint index, const GLchar *name);
+
+static int g_vita_vsync;
+#endif
+
+void eidos_gl_set_vsync(EidosGl *g, int on)
+{
+    (void)g;
+#if defined(__vita__)
+    g_vita_vsync = on != 0;
+    vglWaitVblankStart(on ? GL_TRUE : GL_FALSE);
+#else
+    SDL_GL_SetSwapInterval(on ? 1 : 0);
+#endif
+}
+
+static int gl_vsync_on(void)
+{
+#if defined(__vita__)
+    return g_vita_vsync;
+#else
+    int interval = 0;
+
+    return SDL_GL_GetSwapInterval(&interval) && interval != 0;
+#endif
+}
+
+void eidos_gl_make_current(EidosGl *g)
+{
+#if defined(__vita__)
+    (void)g;
+#else
+    SDL_GL_MakeCurrent(g->window, g->ctx);
+#endif
+}
+
+/* The full quad's vertex array.  The shaders work the corner out from
+ * gl_VertexID, so it needs no buffer, except on the Vita, where the corner
+ * is attribute 0 (vita_glsl) and the array holds the four corners. */
+void eidos_gl_quad_vao(EidosGl *g, GLuint *vao)
+{
+    g->glGenVertexArrays(1, vao);
+#if defined(__vita__)
+    {
+        static const GLfloat corners[8] = { 0.f, 0.f, 1.f, 0.f, 0.f, 1.f, 1.f, 1.f };
+
+        if (g->quad_vbo == 0) {
+            g->glGenBuffers(1, &g->quad_vbo);
+            g->glBindBuffer(GL_ARRAY_BUFFER, g->quad_vbo);
+            g->glBufferData(GL_ARRAY_BUFFER, sizeof(corners), corners, GL_STATIC_DRAW);
+        }
+        g->glBindVertexArray(*vao);
+        g->glBindBuffer(GL_ARRAY_BUFFER, g->quad_vbo);
+        g->glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, NULL);
+        g->glEnableVertexAttribArray(0);
+        g->glBindVertexArray(0);
+        g->glBindBuffer(GL_ARRAY_BUFFER, 0);
+    }
+#endif
+}
 
 static const char *k_vs =
     "#version 330 core\n"
@@ -102,7 +174,7 @@ static const char *k_fs3 =
     "    for (int dy = -rad; dy <= rad; dy++) {\n"
     "        for (int dx = -rad; dx <= rad; dx++) {\n"
     "            ivec2 q = clamp(ip + ivec2(dx, dy), ivec2(0), sz - 1);\n"
-    "            if (texelFetch(tex, q, 0).rgb != texelFetch(behind, q, 0).rgb) { m = true; }\n"
+    "            if (any(notEqual(texelFetch(tex, q, 0).rgb, texelFetch(behind, q, 0).rgb))) { m = true; }\n"
     "        }\n"
     "    }\n"
     "    if (!m) {\n"
@@ -120,7 +192,7 @@ static const char *k_fs3 =
     "        ivec2 c = clamp(ip, ivec2(0), sz - 1);\n"
     "        vec3 T = texelFetch(tex, c, 0).rgb;\n"
     "        vec3 X = texelFetch(zero, c, 0).rgb;\n"
-    "        if (T != X) {\n"
+    "        if (any(notEqual(T, X))) {\n"
     "            float w = clamp((T.g - X.g) / sent.g, 0.0, 1.0);\n"
     "            d = min(vec3(1.0), sharp(zero, uv, texsize, dstsize) + w * d);\n"
     "        }\n"
@@ -233,6 +305,11 @@ static const char *k_fsw =
     "uniform vec3 bd;\n"
     "uniform float bfac;\n"
     "uniform vec3 sent;\n"
+    /* under: beyond the DS screen the kept picture of the field (held, its
+     * rows bottom-up from the viewport's vpy), not the backdrop colour */
+    "uniform sampler2D held;\n"
+    "uniform int under;\n"
+    "uniform float vpy;\n"
     "in vec2 uv;\n"
     "out vec4 color;\n"
     SHARP_FN
@@ -264,8 +341,8 @@ static const char *k_fsw =
      * with a BG, white or any colour): the same at both edges and the
      * middle; a panel at the edge is not stretched out */
     "        ivec2 eo = ivec2(sz0.x - 1 - e.x, e.y), ec = ivec2(sz0.x / 2, e.y);\n"
-    "        bool rowflat = T == texelFetch(tex, eo, 0).rgb && T == texelFetch(tex, ec, 0).rgb;\n"
-    "        if (T == texelFetch(behind, e, 0).rgb && (max(T.r, max(T.g, T.b)) < 0.03 || rowflat)) {\n"
+    "        bool rowflat = all(equal(T, texelFetch(tex, eo, 0).rgb)) && all(equal(T, texelFetch(tex, ec, 0).rgb));\n"
+    "        if (all(equal(T, texelFetch(behind, e, 0).rgb)) && (max(T.r, max(T.g, T.b)) < 0.03 || rowflat)) {\n"
     "            color = vec4(T, 1.0);\n"
     "            return;\n"
     "        }\n"
@@ -276,8 +353,8 @@ static const char *k_fsw =
      * the rest of the row */
     "        if (hasz != 0) {\n"
     "            vec3 X = texelFetch(zero, e, 0).rgb;\n"
-    "            bool xflat = X == texelFetch(zero, eo, 0).rgb && X == texelFetch(zero, ec, 0).rgb;\n"
-    "            if (T != X && (max(X.r, max(X.g, X.b)) < 0.03 || xflat)) {\n"
+    "            bool xflat = all(equal(X, texelFetch(zero, eo, 0).rgb)) && all(equal(X, texelFetch(zero, ec, 0).rgb));\n"
+    "            if (any(notEqual(T, X)) && (max(X.r, max(X.g, X.b)) < 0.03 || xflat)) {\n"
     "                float w = clamp((T.g - X.g) / sent.g, 0.0, 1.0);\n"
     "                color = vec4(X + w * P, 1.0);\n"
     "                return;\n"
@@ -288,7 +365,16 @@ static const char *k_fsw =
      * master brightness as the DS screen is (`bd` has it), so a scene with
      * little 3D, or a fade to white, fills the window like the DS
      * rectangle and does not leave it a square */
-    "    if (!inside) { color = vec4(P + (1.0 - A) * bd, 1.0); return; }\n"
+    "    if (!inside) {\n"
+    "        vec3 B = bd;\n"
+    /* the kept picture, as dark as the game makes its captured screen for a
+     * cut-in (FLD3D_CI_DarkenCapturedScreen halves every colour) */
+    "        if (under != 0) {\n"
+    "            B = texture(held, (gl_FragCoord.xy - vec2(0.0, vpy)) / win).rgb * 0.5;\n"
+    "        }\n"
+    "        color = vec4(P + (1.0 - A) * B, 1.0);\n"
+    "        return;\n"
+    "    }\n"
     "    ivec2 sz = ivec2(texsize);\n"
     "    ivec2 ip = ivec2(floor(duv * texsize));\n"
     "    vec2 dstsize = dsr.zw;\n"
@@ -297,7 +383,7 @@ static const char *k_fsw =
     "    for (int dy = -rad; dy <= rad; dy++) {\n"
     "        for (int dx = -rad; dx <= rad; dx++) {\n"
     "            ivec2 q = clamp(ip + ivec2(dx, dy), ivec2(0), sz - 1);\n"
-    "            if (texelFetch(tex, q, 0).rgb != texelFetch(behind, q, 0).rgb) { m = true; }\n"
+    "            if (any(notEqual(texelFetch(tex, q, 0).rgb, texelFetch(behind, q, 0).rgb))) { m = true; }\n"
     "        }\n"
     "    }\n"
     "    if (!m) {\n"
@@ -310,7 +396,7 @@ static const char *k_fsw =
     "        ivec2 c = clamp(ip, ivec2(0), sz - 1);\n"
     "        vec3 T = texelFetch(tex, c, 0).rgb;\n"
     "        vec3 X = texelFetch(zero, c, 0).rgb;\n"
-    "        if (T != X) {\n"
+    "        if (any(notEqual(T, X))) {\n"
     "            float w = clamp((T.g - X.g) / sent.g, 0.0, 1.0);\n"
     "            d = min(vec3(1.0), sharp(zero, duv, texsize, dstsize) + w * d);\n"
     "        }\n"
@@ -354,10 +440,11 @@ static const char *k_fsu =
  */
 static struct {
     int on, world, screen, hide2d, crop, blur, no_fade, hold, keep, spare, dark, mix;
+    int under;                     /* beyond the DS screen: the kept picture */
     SDL_Rect ds;                   /* the DS screen's rectangle in the window */
     GLuint progw, progb, progu;
     GLint w_tex, w_behind, w_g3d, w_zero, w_texsize, w_dsr, w_win, w_bmode,
-          w_dil, w_hasz, w_hide2d, w_crop, w_bfac, w_sent, w_rect, w_bd;
+          w_dil, w_hasz, w_hide2d, w_crop, w_bfac, w_sent, w_rect, w_bd, w_held, w_under, w_vpy;
     float bd[3];                   /* the backdrop colour beyond the DS screen */
     GLint b_src, b_win, b_dir, b_tint, b_rect;
     GLint u_ctex, u_rect;
@@ -381,12 +468,131 @@ static struct {
  * world is drawn (0 into an off-screen target). */
 static int g_vp_y;
 
+#if defined(__vita__)
+/*
+ * The Vita: vitaGL takes OpenGL ES 2.0's GLSL (attribute, varying,
+ * texture2D, gl_FragColor) and turns it into Cg for the console's compiler.
+ * The presenter's shaders are GLSL 3.30, so each is rewritten first:
+ *
+ *   vertex     "in" is an attribute, "out" a varying; the quad corner the
+ *              others work out from gl_VertexID is an attribute here
+ *              (vgl_corner, location 0, eidos_gl_quad_vao)
+ *   fragment   "in" is a varying, the one "out vec4 NAME" is gl_FragColor;
+ *              texelFetch reads the texel's centre through the shader's
+ *              `texsize` uniform (every image fetched is that size, and
+ *              the presenter's textures are linear, so the centre is the
+ *              texel exactly); clamp has integer forms
+ *
+ * Cg compares vectors a component at a time, so the shaders compare with
+ * all(equal()) and any(notEqual()), which mean the same in GLSL 3.30.
+ * A shader beyond this (the GPU 2D and 3D paths: integer textures) is not
+ * compiled here at all.
+ */
+static void vs_put(char **o, size_t *n, size_t *cap, const char *s, size_t len)
+{
+    if (*n + len + 1 > *cap) {
+        size_t c = (*cap + len + 1) * 2;
+        char *p = (char *)realloc(*o, c);
+
+        if (p == NULL) {
+            return;
+        }
+        *o = p;
+        *cap = c;
+    }
+    memcpy(*o + *n, s, len);
+    *n += len;
+    (*o)[*n] = 0;
+}
+
+static int vs_ident(char c)
+{
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+}
+
+static char *vita_glsl(GLenum type, const char *src)
+{
+    static const char k_corner[] =
+        "vec2(float(gl_VertexID & 1), float((gl_VertexID >> 1) & 1))";
+    static const char k_frag_head[] =
+        "#define texelFetch(vgl_s, vgl_p, vgl_l) texture2D(vgl_s, (vec2(vgl_p) + 0.5) / texsize)\n"
+        "#define clamp vgl_clamp\n"
+        "float vgl_clamp(float x, float a, float b) { return min(max(x, a), b); }\n"
+        "vec2 vgl_clamp(vec2 x, vec2 a, vec2 b) { return min(max(x, a), b); }\n"
+        "vec2 vgl_clamp(vec2 x, float a, float b) { return min(max(x, vec2(a, a)), vec2(b, b)); }\n"
+        "vec3 vgl_clamp(vec3 x, vec3 a, vec3 b) { return min(max(x, a), b); }\n"
+        "int vgl_clamp(int x, int a, int b) { return x < a ? a : x > b ? b : x; }\n"
+        "ivec2 vgl_clamp(ivec2 x, ivec2 a, ivec2 b) {\n"
+        "    return ivec2(vgl_clamp(x.x, a.x, b.x), vgl_clamp(x.y, a.y, b.y)); }\n";
+    const int vert = type == GL_VERTEX_SHADER;
+    char *o = NULL;
+    size_t n = 0, cap = 0;
+    const char *p = src;
+    const char *nl;
+
+    /* the first line, "#version ...", stays first; vitaGL drops it */
+    nl = strchr(p, '\n');
+    if (nl == NULL) {
+        return NULL;
+    }
+    vs_put(&o, &n, &cap, p, (size_t)(nl + 1 - p));
+    p = nl + 1;
+    vs_put(&o, &n, &cap, vert ? "attribute vec2 vgl_corner;\n" : k_frag_head,
+           vert ? strlen("attribute vec2 vgl_corner;\n") : sizeof(k_frag_head) - 1);
+    while (*p != 0) {
+        int line_start = p == src || p[-1] == '\n';
+
+        if (line_start && strncmp(p, "in ", 3) == 0) {
+            vs_put(&o, &n, &cap, vert ? "attribute " : "varying ", vert ? 10 : 8);
+            p += 3;
+        } else if (line_start && strncmp(p, "out vec4 ", 9) == 0 && !vert) {
+            const char *e = strchr(p + 9, ';');
+            char def[96];
+            int len;
+
+            if (e == NULL || e - (p + 9) > 48) {
+                free(o);
+                return NULL;
+            }
+            len = snprintf(def, sizeof def, "#define %.*s gl_FragColor", (int)(e - (p + 9)), p + 9);
+            vs_put(&o, &n, &cap, def, (size_t)len);
+            p = e + 1;
+        } else if (line_start && strncmp(p, "out ", 4) == 0) {
+            vs_put(&o, &n, &cap, "varying ", 8);
+            p += 4;
+        } else if (strncmp(p, k_corner, sizeof(k_corner) - 1) == 0) {
+            vs_put(&o, &n, &cap, "vgl_corner", 10);
+            p += sizeof(k_corner) - 1;
+        } else if (strncmp(p, "texture(", 8) == 0 && (p == src || !vs_ident(p[-1]))) {
+            vs_put(&o, &n, &cap, "texture2D(", 10);
+            p += 8;
+        } else {
+            vs_put(&o, &n, &cap, p, 1);
+            p++;
+        }
+    }
+    return o;
+}
+#endif
+
 static GLuint compile(EidosGl *g, GLenum type, const char *src)
 {
     GLuint s = g->glCreateShader(type);
     GLint ok = 0;
+#if defined(__vita__)
+    char *conv = vita_glsl(type, src);
+
+    if (conv == NULL) {
+        g->glDeleteShader(s);
+        return 0;
+    }
+    src = conv;
+#endif
 
     g->glShaderSource(s, 1, &src, NULL);
+#if defined(__vita__)
+    free(conv);
+#endif
     g->glCompileShader(s);
     g->glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
     if (!ok) {
@@ -413,6 +619,9 @@ GLuint eidos_gl_compile_program(EidosGl *g, const char *vsrc, const char *fsrc)
     prog = g->glCreateProgram();
     g->glAttachShader(prog, vs);
     g->glAttachShader(prog, fs);
+#if defined(__vita__)
+    glBindAttribLocation(prog, 0, "vgl_corner");
+#endif
     g->glLinkProgram(prog);
     g->glDeleteShader(vs);
     g->glDeleteShader(fs);
@@ -475,7 +684,7 @@ static void gl_debug_dump(int w, int h)
     {
         size_t row = ((size_t)w * 3u + 3u) & ~(size_t)3u;
         unsigned char *px = (unsigned char *)malloc(row * (size_t)h);
-        unsigned char *rgb = (unsigned char *)malloc((size_t)w * (size_t)h * 3u);
+        unsigned char *rgb = (unsigned char *)malloc((size_t)w * (size_t)h * 4u);
         FILE *f;
         int x, y;
 
@@ -484,13 +693,13 @@ static void gl_debug_dump(int w, int h)
             free(rgb);
             return;
         }
-        glPixelStorei(GL_PACK_ALIGNMENT, 1);
-        glReadPixels(0, 0, w, h, GL_RGB, GL_UNSIGNED_BYTE, rgb);
+        glPixelStorei(GL_PACK_ALIGNMENT, 4);
+        glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, rgb);
         for (y = 0; y < h; y++) {          /* GL rows run bottom-up: so does BMP */
             for (x = 0; x < w; x++) {
-                px[(size_t)y * row + (size_t)x * 3u + 0] = rgb[((size_t)y * w + x) * 3u + 2];
-                px[(size_t)y * row + (size_t)x * 3u + 1] = rgb[((size_t)y * w + x) * 3u + 1];
-                px[(size_t)y * row + (size_t)x * 3u + 2] = rgb[((size_t)y * w + x) * 3u + 0];
+                px[(size_t)y * row + (size_t)x * 3u + 0] = rgb[((size_t)y * w + x) * 4u + 2];
+                px[(size_t)y * row + (size_t)x * 3u + 1] = rgb[((size_t)y * w + x) * 4u + 1];
+                px[(size_t)y * row + (size_t)x * 3u + 2] = rgb[((size_t)y * w + x) * 4u + 0];
             }
         }
         f = fopen(name, "wb");
@@ -520,9 +729,11 @@ EidosGl *eidos_gl_create(SDL_Window *window)
     EidosGl *g;
     int i;
 
+#if !defined(__vita__)
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+#endif
     g = (EidosGl *)calloc(1, sizeof(*g));
     if (g == NULL) {
         return NULL;
@@ -531,13 +742,29 @@ EidosGl *eidos_gl_create(SDL_Window *window)
     g->s3d = -1;
     g->s3d2 = -1;
     g->edge_mode = 0;           /* no outlines until the setting asks */
+#if defined(__vita__)
+    /* vitaGL owns the GPU (GXM) and the display itself: no SDL context.
+     * It runs only with the console's shader compiler (libshacccg.suprx,
+     * which the player extracts); demo/eidos_boot.c picks SDL's renderer
+     * when that file is missing, so the call here is the only GXM owner.
+     * Its pools are fixed (32 MiB of RAM, 64 MiB of video memory, 16 MiB
+     * physically contiguous): the presenter's textures and two window-size
+     * targets need a few MiB, and the rest stays the game's.  The value
+     * vglInit* returns says the resolution fell back, not that it failed. */
+    (void)vglInitWithCustomSizes(0, 960, 544, 32 * 1024 * 1024, 64 * 1024 * 1024,
+                                 16 * 1024 * 1024, 0, 0);
+    g->ctx = (SDL_GLContext)(uintptr_t)1;    /* "made", for eidos_gl_destroy */
+#else
     g->ctx = SDL_GL_CreateContext(window);
     if (g->ctx == NULL) {
         free(g);
         return NULL;
     }
+#endif
 #if defined(__wasm__)
 #define GL_ENTRY(N) (&N)                     /* an import (plat_gl_int.h) */
+#elif defined(__vita__)
+#define GL_ENTRY(N) vglGetProcAddress(#N)
 #else
 #define GL_ENTRY(N) SDL_GL_GetProcAddress(#N)
 #endif
@@ -545,9 +772,14 @@ EidosGl *eidos_gl_create(SDL_Window *window)
     g->N = (T)GL_ENTRY(N); \
     if (g->N == NULL) { eidos_gl_destroy(g); return NULL; }
     GL_FUNCS(X)
+#if defined(__vita__)
+#undef X
+#define X(T, N) g->N = (T)GL_ENTRY(N);   /* NULL: that path is off */
+#endif
+    GL_FUNCS_OPT(X)
 #undef X
     /* The pacer is the timebase, never the display's refresh. */
-    SDL_GL_SetSwapInterval(0);
+    eidos_gl_set_vsync(g, 0);
 
     g->cap_screen = -1;
     g->prog = eidos_gl_compile_program(g, k_vs, k_fs);
@@ -559,7 +791,7 @@ EidosGl *eidos_gl_create(SDL_Window *window)
     g->u_tex = g->glGetUniformLocation(g->prog, "tex");
     g->u_texsize = g->glGetUniformLocation(g->prog, "texsize");
     g->u_dstsize = g->glGetUniformLocation(g->prog, "dstsize");
-    g->glGenVertexArrays(1, &g->vao);
+    eidos_gl_quad_vao(g, &g->vao);
     glGenTextures(2, g->tex);
     for (i = 0; i < 2; i++) {
         glBindTexture(GL_TEXTURE_2D, g->tex[i]);
@@ -587,7 +819,15 @@ EidosGl *eidos_gl_create(SDL_Window *window)
     }
 
     /* The 3D path is optional: a failure here leaves a working presenter. */
+#if defined(__vita__)
+    /* The Vita has no GPU 3D (it needs integer textures), and these
+     * programs only show its frames: not compiled there. */
+    g->prog3 = 0;
+    (void)k_fs3;
+    (void)k_fsw;
+#else
     g->prog3 = eidos_gl_compile_program(g, k_vs, k_fs3);
+#endif
     if (g->prog3 != 0) {
         g->u3_rect = g->glGetUniformLocation(g->prog3, "rect");
         g->u3_tex = g->glGetUniformLocation(g->prog3, "tex");
@@ -636,7 +876,11 @@ EidosGl *eidos_gl_create(SDL_Window *window)
     }
 
     /* The one-screen layout's programs: optional like the panel's. */
+#if defined(__vita__)
+    g_one.progw = 0;                 /* the window-size world needs the GPU 3D */
+#else
     g_one.progw = eidos_gl_compile_program(g, k_vs, k_fsw);
+#endif
     if (g_one.progw != 0) {
         g_one.w_rect = g->glGetUniformLocation(g_one.progw, "rect");
         g_one.w_tex = g->glGetUniformLocation(g_one.progw, "tex");
@@ -652,6 +896,9 @@ EidosGl *eidos_gl_create(SDL_Window *window)
         g_one.w_hide2d = g->glGetUniformLocation(g_one.progw, "hide2d");
         g_one.w_crop = g->glGetUniformLocation(g_one.progw, "crop");
         g_one.w_bd = g->glGetUniformLocation(g_one.progw, "bd");
+        g_one.w_held = g->glGetUniformLocation(g_one.progw, "held");
+        g_one.w_under = g->glGetUniformLocation(g_one.progw, "under");
+        g_one.w_vpy = g->glGetUniformLocation(g_one.progw, "vpy");
         g_one.w_bfac = g->glGetUniformLocation(g_one.progw, "bfac");
         g_one.w_sent = g->glGetUniformLocation(g_one.progw, "sent");
     }
@@ -683,7 +930,7 @@ void eidos_gl_destroy(EidosGl *g)
         return;
     }
     if (g->ctx != NULL) {
-        SDL_GL_MakeCurrent(g->window, g->ctx);
+        eidos_gl_make_current(g);
         if (g->tex[0] != 0) {
             glDeleteTextures(2, g->tex);
         }
@@ -737,7 +984,12 @@ void eidos_gl_destroy(EidosGl *g)
         if (g->prog3 != 0 && g->glDeleteProgram != NULL) {
             g->glDeleteProgram(g->prog3);
         }
+        if (g->quad_vbo != 0 && g->glDeleteBuffers != NULL) {
+            g->glDeleteBuffers(1, &g->quad_vbo);
+        }
+#if !defined(__vita__)                  /* vitaGL stays up with the process */
         SDL_GL_DestroyContext(g->ctx);
+#endif
     }
     free(g);
 }
@@ -1179,6 +1431,7 @@ void eidos_gl_one_set(EidosGl *g, int on, int world, int screen,
     g_one.hold = (no_fade & 2) != 0;
     g_one.keep = (no_fade & 4) != 0;
     g_one.spare = (no_fade & (1 << 19)) != 0;
+    g_one.under = (no_fade & (1 << 20)) != 0;
     g_one.dark = (no_fade >> 8) & 31;
     g_one.mix = (no_fade >> 13) & 31;
     if (ds != NULL) {
@@ -1369,7 +1622,7 @@ static void one_world(EidosGl *g, int out_w, int out_h, const SDL_Rect dst[2])
         one_blur(g, out_w, out_h);
         return;
     }
-    if (use_w && !blur && !g_one.keep && !g_one.hold && !g_one.no_fade && !g_one.spare) {
+    if (use_w && !blur && !g_one.keep && !g_one.hold && !g_one.no_fade && !g_one.spare && !g_one.under) {
         /* a live world that is not the field (a battle, the title): the
          * kept picture of the field is out of date from here */
         g_one.frozen_ok = 0;
@@ -1403,6 +1656,11 @@ static void one_world(EidosGl *g, int out_w, int out_h, const SDL_Rect dst[2])
             g->glUniform3fv(g_one.w_bd, 1, g_one.no_fade ? none : g_one.bd);
         }
         g->glUniform3fv(g_one.w_sent, 1, sent);
+        g->glUniform1i(g_one.w_held, 4);
+        g->glUniform1i(g_one.w_under, g_one.under && frozen && g_one.frozen != 0);
+        g->glUniform1f(g_one.w_vpy, (float)g_vp_y);
+        g->glActiveTexture(GL_TEXTURE4);
+        glBindTexture(GL_TEXTURE_2D, g_one.frozen != 0 ? g_one.frozen : g->behind_tex);
         g->glActiveTexture(GL_TEXTURE3);
         glBindTexture(GL_TEXTURE_2D, g->zero_tex);
         g->glActiveTexture(GL_TEXTURE2);
@@ -1412,7 +1670,7 @@ static void one_world(EidosGl *g, int out_w, int out_h, const SDL_Rect dst[2])
         g->glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, g->tex[s]);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-        if (g_one.mix > 0 && frozen && !blur) {
+        if (g_one.mix > 0 && frozen && !blur && g->glBlendColor != NULL) {
             /* a scene change blends the old picture out over the new
              * world: the kept wide picture at the game's weight */
             float a = g_one.mix >= 16 ? 1.f : (float)g_one.mix / 16.f;
@@ -1430,7 +1688,7 @@ static void one_world(EidosGl *g, int out_w, int out_h, const SDL_Rect dst[2])
             glBlendFunc(GL_CONSTANT_ALPHA, GL_ONE_MINUS_CONSTANT_ALPHA);
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
             glDisable(GL_BLEND);
-        } else if (!blur && g_one.keep && (!dark || g_one.no_fade)) {
+        } else if (!blur && g_one.keep && !g_one.under && (!dark || g_one.no_fade)) {
             /* keep this live world for a later modal (see g_one.frozen) */
             if (g_one.frozen == 0) {
                 glGenTextures(1, &g_one.frozen);
@@ -1565,12 +1823,117 @@ void eidos_gl_present_panel(EidosGl *g, int out_w, int out_h,
     if (g == NULL || out_w <= 0 || out_h <= 0) {
         return;
     }
+    {
+        /* Debugging aid: EIDOS_GL_STATE=N logs, at the Nth present, the GL
+         * state the presenter draws with and the columns a full-window
+         * clear in magenta reaches (the frame then shows the clear). */
+        static int n, at = -1;
+
+        if (at < 0) {
+            const char *e = getenv("EIDOS_GL_STATE");
+
+            at = e != NULL ? atoi(e) : 0;
+        }
+        if (at > 0 && ++n == at) {
+            GLint vp[4] = { 0 }, sc[4] = { 0 }, fbo = 0;
+            unsigned char px[4];
+            int x, first = -1, last = -1;
+
+            glGetIntegerv(GL_VIEWPORT, vp);
+            glGetIntegerv(GL_SCISSOR_BOX, sc);
+            glGetIntegerv(0x8CA6 /* GL_DRAW_FRAMEBUFFER_BINDING */, &fbo);
+            fprintf(stderr, "eidos: GL state at present %d: out %dx%d, viewport %d %d %d %d, scissor %s %d %d %d %d, "
+                    "draw framebuffer %d, screen 0 %dx%d at %d,%d\n", n, out_w, out_h, vp[0], vp[1], vp[2], vp[3],
+                    glIsEnabled(GL_SCISSOR_TEST) ? "on" : "off", sc[0], sc[1], sc[2], sc[3], (int)fbo,
+                    dst[0].w, dst[0].h, dst[0].x, dst[0].y);
+            g->glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            glViewport(0, 0, out_w, out_h);
+            glClearColor(1.f, 0.f, 1.f, 1.f);
+            glClear(GL_COLOR_BUFFER_BIT);
+            glPixelStorei(GL_PACK_ALIGNMENT, 1);
+            for (x = 0; x < out_w; x += 8) {
+                glReadPixels(x, out_h / 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+                if (px[0] > 128 && px[2] > 128) {
+                    if (first < 0) {
+                        first = x;
+                    }
+                    last = x;
+                }
+            }
+            fprintf(stderr, "eidos: GL state: a full-window clear reaches x %d..%d of %d\n", first, last, out_w);
+            /* then the frame as drawn: its lit columns, and the last quad
+             * the screens' programs were given */
+            draw_scene(g, out_w, out_h, dst);
+            first = last = -1;
+            for (x = 0; x < out_w; x += 8) {
+                int y;
+
+                for (y = out_h / 8; y < out_h; y += out_h / 8) {
+                    glReadPixels(x, y, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+                    if (px[0] | px[1] | px[2]) {
+                        if (first < 0) {
+                            first = x;
+                        }
+                        last = x;
+                        break;
+                    }
+                }
+            }
+            {
+                GLfloat r[4] = { 0 }, r1[4] = { 0 }, rw[4] = { 0 };
+                typedef void (APIENTRY *GetUf)(GLuint, GLint, GLfloat *);
+#if defined(__wasm__)
+                GetUf get = &glGetUniformfv;    /* an import (plat_gl_int.h) */
+#else
+                GetUf get = (GetUf)SDL_GL_GetProcAddress("glGetUniformfv");
+#endif
+
+                if (get != NULL) {
+                    get(g->prog, g->u_rect, r);
+                    if (g->prog3 != 0) {
+                        get(g->prog3, g->u3_rect, r1);
+                    }
+                    if (g_one.progw != 0) {
+                        get(g_one.progw, g_one.w_rect, rw);
+                    }
+                }
+                fprintf(stderr, "eidos: GL state: the frame lights x %d..%d; rect %.3f %.3f %.3f %.3f, "
+                        "3D rect %.3f %.3f %.3f %.3f, world rect %.3f %.3f %.3f %.3f, one %d world %d\n",
+                        first, last, r[0], r[1], r[2], r[3], r1[0], r1[1], r1[2], r1[3], rw[0], rw[1], rw[2], rw[3],
+                        g_one.on, g_one.world);
+            }
+            eidos_gl_swap(g);
+            return;
+        }
+    }
     draw_scene(g, out_w, out_h, dst);
     if (!g_one.on) {
         draw_panel(g, out_w, out_h, panel);
     }
     gl_debug_dump(out_w, out_h);
-    SDL_GL_SwapWindow(g->window);
+    eidos_gl_swap(g);
+}
+
+/* The swap.  With VSync on it blocks until the vblank: that time is the
+ * pacing's, so the profile counts it as the wait, not as the frame's work
+ * (the SDL3 GPU backend waits in the same place the clock does).  With
+ * VSync off a slow swap is the GPU's work and stays in the present. */
+void eidos_gl_swap(EidosGl *g)
+{
+#if defined(__vita__)
+#define GL_SWAP(g) ((void)(g), vglSwapBuffers(GL_FALSE))
+#else
+#define GL_SWAP(g) SDL_GL_SwapWindow((g)->window)
+#endif
+    if (gl_vsync_on()) {
+        unsigned long long t = eidos_prof_begin();
+
+        GL_SWAP(g);
+        eidos_prof_end(EIDOS_PROF_WAIT, t);
+        return;
+    }
+    GL_SWAP(g);
+#undef GL_SWAP
 }
 
 /* The two screens alone: the panel is the port's own, and a caller that
@@ -1589,17 +1952,23 @@ int eidos_gl_grab(EidosGl *g, int out_w, int out_h, const SDL_Rect dst[2],
     if (g == NULL || rgb == NULL || out_w <= 0 || out_h <= 0) {
         return -1;
     }
-    raw = (unsigned char *)malloc((size_t)out_w * (size_t)out_h * 3u);
+    raw = (unsigned char *)malloc((size_t)out_w * (size_t)out_h * 4u);
     if (raw == NULL) {
         return -1;
     }
     draw_scene(g, out_w, out_h, dst);      /* not swapped: only read */
-    glPixelStorei(GL_PACK_ALIGNMENT, 1);
-    glReadPixels(0, 0, out_w, out_h, GL_RGB, GL_UNSIGNED_BYTE, raw);
+    glPixelStorei(GL_PACK_ALIGNMENT, 4);
+    glReadPixels(0, 0, out_w, out_h, GL_RGBA, GL_UNSIGNED_BYTE, raw);
     for (y = 0; y < out_h; y++) {          /* GL rows run bottom-up */
-        memcpy(rgb + (size_t)y * (size_t)out_w * 3u,
-               raw + (size_t)(out_h - 1 - y) * (size_t)out_w * 3u,
-               (size_t)out_w * 3u);
+        const unsigned char *src = raw + (size_t)(out_h - 1 - y) * (size_t)out_w * 4u;
+        unsigned char *d = rgb + (size_t)y * (size_t)out_w * 3u;
+        int x;
+
+        for (x = 0; x < out_w; x++) {
+            d[x * 3 + 0] = src[x * 4 + 0];
+            d[x * 3 + 1] = src[x * 4 + 1];
+            d[x * 3 + 2] = src[x * 4 + 2];
+        }
     }
     free(raw);
     return glGetError() == GL_NO_ERROR ? 0 : -1;

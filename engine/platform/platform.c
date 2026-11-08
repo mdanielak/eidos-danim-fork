@@ -23,8 +23,9 @@
 #include "mod_panel_draw.h"
 #include "platform.h"
 #include "plat_embed.h"
-#include "plat_gl.h"
+#include "plat_gpu.h"
 #include "plat_thread.h"
+#include "prof.h"
 #include "settings.h"
 #include "ui.h"
 
@@ -35,25 +36,10 @@
 #define SCREEN_PIXELS (SCREEN_W * SCREEN_H)
 
 
-/*
- * The presenter's third image: the run-status panel (engine/platform/
- * mod_panel_draw.h).  The two calls are declared here rather than in
- * plat_gl.h: the panel is the port's own picture, drawn by the platform
- * layer beside the game's screens, and plat_gl.h is the presenter's own
- * header (shared with the 3D path).  The declaration is the port's
- * convention for a call whose header is not this file's, the way
- * engine/platform/mod_panel_draw.c declares the model's.
- */
-extern void eidos_gl_upload_panel(EidosGl *gl, const unsigned char *rgba,
-                                   int w, int h);
-extern void eidos_gl_present_panel(EidosGl *gl, int out_w, int out_h,
-                                   const SDL_Rect dst[2],
-                                   const SDL_Rect *panel);
-
 struct EidosPlatform {
     SDL_Window   *window;
     SDL_Renderer *renderer;        /* NULL when the GPU presenter runs      */
-    EidosGl      *gl;              /* the OpenGL presenter (plat_gl.c)      */
+    EidosGpu     *gl;              /* the GPU backend (plat_gpu.h)          */
     SDL_Texture  *tex[2];          /* 0 = top, 1 = bottom */
     u8           *shadow[2];       /* the last buffer uploaded to each      */
     SDL_Texture  *pre[2];          /* nearest pre-scale targets             */
@@ -136,6 +122,9 @@ struct EidosPlatform {
     int paced;          /* has the first boundary been set                 */
     u32 late_frames;
     u32 lag_frames;      /* whole frames the schedule lagged at the last wait */
+    float refresh_hz;    /* the window's display, 0 when not read yet      */
+    int vsync_k;         /* refresh / 60 when it is a whole multiple, or 0  */
+    int vsync_on;        /* what the backend was last told                  */
 
     /* audio */
     SDL_AudioStream  *audio_dev;    /* the stream bound to the device        */
@@ -544,7 +533,7 @@ extern int bw_battle_view_active(void) __attribute__((weak));    /* sdk/battle_v
 static int world_active(const EidosPlatform *p)
 {
     return p != NULL && p->layout == EIDOS_LAYOUT_ONE && p->gl != NULL &&
-           eidos_gl_has3d(p->gl) && p->ui_view.mode == EIDOS_VIEW_WORLD;
+           eidos_gpu_has3d(p->gl) && p->ui_view.mode == EIDOS_VIEW_WORLD;
 }
 
 static void read_stylus(EidosPlatform *p)
@@ -783,12 +772,64 @@ static void eidos_delay_ms(Uint32 ms)
 #endif
 }
 
+/* The VSync setting.  On a display at 60 Hz or a whole multiple of it
+ * (59.94 counts: 57 to 63 Hz per 60), the game runs at the display's own
+ * rate instead of the DS's 59.83 Hz, and the backend waits for the vblank
+ * with one frame queued: every frame is shown for the same time.  On other
+ * rates (50, 75, 144 Hz) and in fast forward the clock alone paces, as
+ * without the setting.  Audio needs no change: the mixer makes what the
+ * device asks for, so 0.3% more frames only means 0.3% faster music. */
+static void pacer_vsync(EidosPlatform *p, int ff)
+{
+    int want;
+
+    if (p->refresh_hz == 0.0f) {   /* -1: the rate is not known */
+        const SDL_DisplayMode *m = p->window != NULL
+            ? SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(p->window)) : NULL;
+        int k = 0;
+
+        const char *force = getenv("EIDOS_REFRESH_HZ");   /* tests: as if the display ran at this rate */
+
+        p->refresh_hz = m != NULL && m->refresh_rate > 0.0f ? m->refresh_rate : -1.0f;
+        if (force != NULL && atof(force) > 0.0) {
+            p->refresh_hz = (float)atof(force);
+        }
+        if (p->refresh_hz > 0.0f) {
+            k = (int)(p->refresh_hz / 60.0f + 0.5f);
+            if (k < 1 || p->refresh_hz < 57.0f * (float)k || p->refresh_hz > 63.0f * (float)k) {
+                k = 0;
+            }
+        }
+        p->vsync_k = k;
+        p->vsync_on = -1;   /* tell the backend again, whatever it was */
+        {
+            char hz[16];
+
+            snprintf(hz, sizeof hz, "%.2f", p->refresh_hz);
+            eidos_bench_note("refresh_hz", hz);
+        }
+    }
+    want = p->gl != NULL && ff == 1 && p->vsync_k > 0
+           && eidos_settings_get(EIDOS_OPT_VSYNC) != 0;
+    if (want != p->vsync_on) {
+        p->vsync_on = want;
+        if (p->gl != NULL) {
+            eidos_gpu_set_vsync(p->gl, want);
+        }
+        if (ff == 1) {
+            eidos_bench_note("vsync", want ? "on" : "off");   /* the run's last pacing */
+        }
+        p->paced = 0;   /* a new period: the schedule restarts from now */
+    }
+}
+
 void eidos_platform_wait_frame(EidosPlatform *p)
 {
     u64 now;
     u64 period;
     u64 step;
     u64 rem_step;
+    int ff;
 
     if (p == NULL) {
         return;
@@ -810,8 +851,19 @@ void eidos_platform_wait_frame(EidosPlatform *p)
     /* Fast forward: the period is the speed times shorter (the speed is in
      * thousandths, so 2500 is two and a half times; with
      * EIDOS_FAST_FORWARD_MAX the host is always behind, so it never waits). */
-    period = (u64)EIDOS_DS_FRAME_CLOCKS * 1000000000ull * 1000ull
-             / (u64)eidos_platform_fast_forward(p);
+    ff = eidos_platform_fast_forward(p);
+    pacer_vsync(p, ff >= 1000 ? ff / 1000 : ff);
+    if (p->vsync_on) {
+        /* k vblanks a frame; the present's own wait keeps the phase, the
+         * clock only stops a 120 Hz display from showing 120 frames.  The
+         * clock runs 0.5% short so the vblank, never the clock, is the
+         * last wait: a clock a little slow would skip a vblank now and
+         * then, the very stutter VSync is for. */
+        period = (u64)((double)p->vsync_k * 1e9 * 0.995 / (double)p->refresh_hz
+                       * (double)EIDOS_DS_SYSTEM_CLOCK);
+    } else {
+        period = (u64)EIDOS_DS_FRAME_CLOCKS * 1000000000ull * 1000ull / (u64)ff;
+    }
     step = period / (u64)EIDOS_DS_SYSTEM_CLOCK;
     /* The part of the period the integer nanosecond count drops.
      * Accumulating it adds the missing nanosecond back instead of losing a
@@ -889,7 +941,7 @@ void eidos_platform_set_pixel_scale(EidosPlatform *p, int scale)
 void eidos_platform_set_outlines(EidosPlatform *p, int mode)
 {
     if (p != NULL && p->gl != NULL) {
-        eidos_gl_set_edges(p->gl, mode);
+        eidos_gpu_set_edges(p->gl, mode);
     }
 }
 
@@ -1252,7 +1304,7 @@ static void upload_panel(EidosPlatform *p, const EidosModPanelView *view)
     p->panel_w = view->w;
     p->panel_h = view->h;
     if (p->gl != NULL) {
-        eidos_gl_upload_panel(p->gl, view->rgba, view->w, view->h);
+        eidos_gpu_upload_panel(p->gl, view->rgba, view->w, view->h);
         return;
     }
     /*
@@ -1314,21 +1366,22 @@ static void render(EidosPlatform *p)
                 wh = oh - p->ui_view.bottom;    /* above a phone's hint bar */
             }
             eidos_world_geometry(ow, wh, p->ui_view.zoom, &wg);
-            eidos_gl_one_bottom(p->gl, oh - wh);
+            eidos_gpu_one_bottom(p->gl, oh - wh);
             ds.x = wg.ds.x;
             ds.y = wg.ds.y;
             ds.w = wg.ds.w;
             ds.h = wg.ds.h;
-            eidos_gl_one_set(p->gl, 1, world_active(p), p->ui_view.world_screen,
+            eidos_gpu_one_set(p->gl, 1, world_active(p), p->ui_view.world_screen,
                              &ds, p->ui_view.hide_2d, p->ui_view.blur,
                              (p->ui_view.no_fade ? 1 : 0) | (p->ui_view.hold_world ? 2 : 0) |
                              (p->ui_view.keep_world ? 4 : 0) |
                              ((p->ui_view.dark & 31) << 8) |
                              ((p->ui_view.cap_mix & 31) << 13) |
                              (p->ui_view.ds_only ? 1 << 18 : 0) |
-                             (p->ui_view.spare_world ? 1 << 19 : 0));
+                             (p->ui_view.spare_world ? 1 << 19 : 0) |
+                             (p->ui_view.held_backdrop ? 1 << 20 : 0));
         } else {
-            eidos_gl_one_set(p->gl, 0, 0, 0, NULL, 0, 0, 0);
+            eidos_gpu_one_set(p->gl, 0, 0, 0, NULL, 0, 0, 0);
         }
 
         for (i = 0; i < 2; i++) {
@@ -1341,7 +1394,7 @@ static void render(EidosPlatform *p)
             /* shown inside another program: the picture goes to it */
             unsigned char *px = eidos_embed_pixels(ow, oh);
 
-            if (px != NULL && eidos_gl_grab(p->gl, ow, oh, rects, px) == 0) {
+            if (px != NULL && eidos_gpu_grab(p->gl, ow, oh, rects, px) == 0) {
                 eidos_embed_publish(ow, oh);
             }
             return;
@@ -1351,9 +1404,9 @@ static void render(EidosPlatform *p)
             prect.y = view.dst.y;
             prect.w = view.dst.w;
             prect.h = view.dst.h;
-            eidos_gl_present_panel(p->gl, ow, oh, rects, &prect);
+            eidos_gpu_present_panel(p->gl, ow, oh, rects, &prect);
         } else {
-            eidos_gl_present(p->gl, ow, oh, rects);
+            eidos_gpu_present(p->gl, ow, oh, rects);
         }
         return;
     }
@@ -1747,6 +1800,12 @@ int eidos_platform_init(EidosPlatform **out, const EidosPlatformConfig *cfg)
             init_h = eh;
         }
     }
+#if defined(__vita__)
+    /* the Vita's screen: SDL keeps the size it is asked for, and vitaGL
+     * draws a 960x544 frame */
+    init_w = 960;
+    init_h = 544;
+#endif
 
     /*
      * The GPU presenter is the default: the CPU hands over small images and
@@ -1772,11 +1831,33 @@ int eidos_platform_init(EidosPlatform **out, const EidosPlatformConfig *cfg)
             flags |= SDL_WINDOW_MAXIMIZED;   /* as the player left it */
         }
 
-        if (try_gl) {
+        /* The SDL3 GPU backend (plat_sdlgpu.c) when the Renderer setting
+         * says Native, or EIDOS_RENDERER=gpu[:driver] (driver direct3d12,
+         * vulkan or metal); EIDOS_RENDERER=gl keeps OpenGL whatever the
+         * setting.  OpenGL takes over when it does not come up. */
+        if (want == NULL && eidos_settings_get(EIDOS_OPT_RENDERER) == 1) {
+            want = "gpu";
+        }
+        if (want != NULL && strncmp(want, "gpu", 3) == 0 && try_gl) {
+            p->window = SDL_CreateWindow(title, init_w, init_h, flags);
+            if (p->window != NULL) {
+                p->gl = eidos_gpu_create_sdl(p->window, want[3] == ':' ? want + 4 : NULL);
+                if (p->gl == NULL) {
+                    SDL_DestroyWindow(p->window);
+                    p->window = NULL;
+                }
+            }
+        }
+        if (try_gl && p->window == NULL) {
+#if defined(__vita__)
+            /* vitaGL is the OpenGL there, not SDL's own GLES (plat_gl.c) */
+            p->window = SDL_CreateWindow(title, init_w, init_h, flags);
+#else
             p->window = SDL_CreateWindow(title, init_w, init_h,
                                          flags | SDL_WINDOW_OPENGL);
+#endif
             if (p->window != NULL) {
-                p->gl = eidos_gl_create(p->window);
+                p->gl = eidos_gpu_create_gl(p->window);
                 if (p->gl == NULL) {
                     SDL_DestroyWindow(p->window);   /* an OpenGL window cannot take SDL's renderer back */
                     p->window = NULL;
@@ -1790,6 +1871,20 @@ int eidos_platform_init(EidosPlatform **out, const EidosPlatformConfig *cfg)
             SDL_SetWindowPosition(p->window, SDL_WINDOWPOS_CENTERED,
                                   SDL_WINDOWPOS_CENTERED);
         }
+    }
+    /* the benchmark's notes (engine/frame/prof.h): what this run is on */
+    eidos_bench_note("system", SDL_GetPlatform());
+    eidos_bench_note("backend", p->gl != NULL ? eidos_gpu_name(p->gl) : "SDL renderer");
+    if (p->gl != NULL && strcmp(eidos_gpu_name(p->gl), "SDL3 GPU") == 0) {
+        eidos_bench_note("gpu_driver", eidos_gpu_sdl_driver(p->gl));
+    }
+    eidos_bench_note("video_driver", SDL_GetCurrentVideoDriver() != NULL ? SDL_GetCurrentVideoDriver()
+                                                                         : "none");
+    {
+        char cores[16];
+
+        snprintf(cores, sizeof cores, "%d", SDL_GetNumLogicalCPUCores());
+        eidos_bench_note("cpu_cores", cores);
     }
     if (getenv("EIDOS_RENDERER_REPORT") != NULL) {
         fprintf(stderr, "eidos: presenter %s (video driver %s)\n",
@@ -1905,7 +2000,7 @@ void eidos_platform_quit(EidosPlatform *p)
     if (p->renderer != NULL) {
         SDL_DestroyRenderer(p->renderer);
     }
-    eidos_gl_destroy(p->gl);
+    eidos_gpu_destroy(p->gl);
     if (p->window != NULL) {
         SDL_DestroyWindow(p->window);
     }
@@ -2066,6 +2161,10 @@ int eidos_platform_pump(EidosPlatform *p)
                 p->cap_state = EIDOS_CAPTURE_PAD;
             }
             break;
+        case SDL_EVENT_WINDOW_DISPLAY_CHANGED:
+        case SDL_EVENT_DISPLAY_CURRENT_MODE_CHANGED:
+            p->refresh_hz = 0.0f;   /* the pacer reads the new rate */
+            break;
         case SDL_EVENT_WINDOW_MAXIMIZED:
         case SDL_EVENT_WINDOW_RESTORED:
         case SDL_EVENT_WINDOW_RESIZED:
@@ -2197,7 +2296,7 @@ void eidos_platform_present_nn(EidosPlatform *p, const u8 *top, int n_top,
         place(p, &pl);
         out_size(p, &ow, &oh);
         viewport(p, &pl, ow, oh, &vp);
-        eidos_gl_set_3d2d_shown(p->gl, vp.screen[0].w > vp.screen[1].w ? vp.screen[0].w : vp.screen[1].w,
+        eidos_gpu_set_3d2d_shown(p->gl, vp.screen[0].w > vp.screen[1].w ? vp.screen[0].w : vp.screen[1].w,
                                 vp.screen[0].h > vp.screen[1].h ? vp.screen[0].h : vp.screen[1].h);
     }
     for (i = 0; i < 2; i++) {
@@ -2221,8 +2320,8 @@ void eidos_platform_present_nn(EidosPlatform *p, const u8 *top, int n_top,
             /* a screen the GPU composed is in its texture already
              * (eidos_platform_gpu2d_show) */
             if (p->gpu2d_frame[i] == NULL || nn[i] != 1
-                || eidos_gl2d_compose(p->gl, p->gpu2d_frame[i], NULL, i) != 0) {
-                eidos_gl_upload(p->gl, i, p->shadow[i], (int)SCREEN_W * nn[i],
+                || eidos_gpu_2d_compose(p->gl, p->gpu2d_frame[i], NULL, i) != 0) {
+                eidos_gpu_upload(p->gl, i, p->shadow[i], (int)SCREEN_W * nn[i],
                                 (int)SCREEN_H * nn[i]);
             }
             p->gpu2d_frame[i] = NULL;
@@ -2255,7 +2354,7 @@ void eidos_platform_present_nn(EidosPlatform *p, const u8 *top, int n_top,
 
 int eidos_platform_gpu3d(const EidosPlatform *p)
 {
-    return p != NULL && p->gl != NULL && eidos_gl_has3d(p->gl);
+    return p != NULL && p->gl != NULL && eidos_gpu_has3d(p->gl);
 }
 
 int eidos_platform_read3d_1x(EidosPlatform *p, const struct G3dSnapshot *snap,
@@ -2264,13 +2363,13 @@ int eidos_platform_read3d_1x(EidosPlatform *p, const struct G3dSnapshot *snap,
     if (!eidos_platform_gpu3d(p)) {
         return -1;
     }
-    return eidos_gl_read3d_1x(p->gl, snap, out, async);
+    return eidos_gpu_read3d_1x(p->gl, snap, out, async);
 }
 
 void eidos_platform_set_3d_zero(EidosPlatform *p, const u8 *zero)
 {
     if (eidos_platform_gpu3d(p)) {
-        eidos_gl_set_3d_zero(p->gl, zero, (int)SCREEN_W, (int)SCREEN_H);
+        eidos_gpu_set_3d_zero(p->gl, zero, (int)SCREEN_W, (int)SCREEN_H);
     }
 }
 
@@ -2279,12 +2378,12 @@ int eidos_platform_gpu2d(EidosPlatform *p, const struct G2dGpuFrame *f, u8 *read
     if (p == NULL || p->gl == NULL) {
         return -1;
     }
-    return eidos_gl2d_compose(p->gl, f, readback, -1);
+    return eidos_gpu_2d_compose(p->gl, f, readback, -1);
 }
 
 int eidos_platform_gpu2d_ready(EidosPlatform *p)
 {
-    return p != NULL && p->gl != NULL && eidos_gl2d_ready(p->gl);
+    return p != NULL && p->gl != NULL && eidos_gpu_2d_ready(p->gl);
 }
 
 int eidos_platform_gpu2d_pixels(EidosPlatform *p, int screen, u8 *out)
@@ -2292,7 +2391,7 @@ int eidos_platform_gpu2d_pixels(EidosPlatform *p, int screen, u8 *out)
     if (p == NULL || p->gl == NULL || out == NULL) {
         return -1;
     }
-    return eidos_gl2d_pixels(p->gl, screen, out);
+    return eidos_gpu_2d_pixels(p->gl, screen, out);
 }
 
 int eidos_platform_gpu2d_show(EidosPlatform *p, const struct G2dGpuFrame *f, int screen)
@@ -2341,7 +2440,7 @@ static int render_3d_for(EidosPlatform *p, int screen, const struct G3dSnapshot 
             }
         }
     }
-    return eidos_gl_render3d(p->gl, snap, rw, rh);
+    return eidos_gpu_render3d(p->gl, snap, rw, rh);
 }
 
 int eidos_platform_set_3d(EidosPlatform *p, int screen, const u8 *behind,
@@ -2352,14 +2451,14 @@ int eidos_platform_set_3d(EidosPlatform *p, int screen, const u8 *behind,
         return -1;
     }
     if (screen < 0 || behind == NULL || snap == NULL) {
-        eidos_gl_set_3d(p->gl, -1, NULL, 0, 0, 0, 0.f, 0);
+        eidos_gpu_set_3d(p->gl, -1, NULL, 0, 0, 0, 0.f, 0);
         return 0;
     }
     if (render_3d_for(p, screen, snap, n) != 0) {
-        eidos_gl_set_3d(p->gl, -1, NULL, 0, 0, 0, 0.f, 0);
+        eidos_gpu_set_3d(p->gl, -1, NULL, 0, 0, 0, 0.f, 0);
         return -1;
     }
-    eidos_gl_set_3d(p->gl, screen, behind, (int)SCREEN_W, (int)SCREEN_H, bmode,
+    eidos_gpu_set_3d(p->gl, screen, behind, (int)SCREEN_W, (int)SCREEN_H, bmode,
                     bfac, dilate);
     return 0;
 }
@@ -2371,17 +2470,17 @@ int eidos_platform_set_3d_from2d(EidosPlatform *p, int screen, const struct G3dS
         return -1;
     }
     if (render_3d_for(p, screen, snap, n) != 0) {
-        eidos_gl_set_3d(p->gl, -1, NULL, 0, 0, 0, 0.f, 0);
+        eidos_gpu_set_3d(p->gl, -1, NULL, 0, 0, 0, 0.f, 0);
         return -1;
     }
-    eidos_gl_set_3d_from2d(p->gl, screen, bmode, bfac);
+    eidos_gpu_set_3d_from2d(p->gl, screen, bmode, bfac);
     return 0;
 }
 
 void eidos_platform_set_world_backdrop(EidosPlatform *p, u32 rgb)
 {
     if (p != NULL && p->gl != NULL) {
-        eidos_gl_set_world_backdrop(p->gl, rgb);
+        eidos_gpu_set_world_backdrop(p->gl, rgb);
     }
 }
 
@@ -2391,11 +2490,11 @@ int eidos_platform_set_3d2d(EidosPlatform *p, int screen, const struct G3dSnapsh
         return -1;
     }
     n = n < 1 ? 1 : n > 20 ? 20 : n;
-    if (eidos_gl_render3d(p->gl, snap, (int)SCREEN_W * n, (int)SCREEN_H * n) != 0) {
-        eidos_gl_set_3d2d(p->gl, -1);
+    if (eidos_gpu_render3d(p->gl, snap, (int)SCREEN_W * n, (int)SCREEN_H * n) != 0) {
+        eidos_gpu_set_3d2d(p->gl, -1);
         return -1;
     }
-    eidos_gl_set_3d2d(p->gl, screen);
+    eidos_gpu_set_3d2d(p->gl, screen);
     return 0;
 }
 
@@ -2431,7 +2530,7 @@ void eidos_platform_set_ui_canvas(EidosPlatform *p, const struct EidosUiCanvas *
     }
     if (p->layout != EIDOS_LAYOUT_ONE || c == NULL || c->rgba == NULL ||
         c->w <= 0 || c->h <= 0 || c->k <= 0) {
-        eidos_gl_one_canvas(p->gl, NULL, 0, 0, NULL);
+        eidos_gpu_one_canvas(p->gl, NULL, 0, 0, NULL);
         p->ui_cw = p->ui_ch = p->ui_ck = 0;
         return;
     }
@@ -2455,7 +2554,7 @@ void eidos_platform_set_ui_canvas(EidosPlatform *p, const struct EidosUiCanvas *
         p->ui_cw = c->w;
         p->ui_ch = c->h;
         p->ui_ck = c->k;
-        eidos_gl_one_canvas(p->gl, up, c->w, c->h, &r);
+        eidos_gpu_one_canvas(p->gl, up, c->w, c->h, &r);
     }
 }
 
@@ -2725,14 +2824,14 @@ int eidos_platform_capture_hires(EidosPlatform *p, const u8 *a2d,
     if (n > 20) {
         n = 20;
     }
-    return eidos_gl_capture(p->gl, a2d, behind, snap, n, blend, eva, evb, b1x);
+    return eidos_gpu_capture(p->gl, a2d, behind, snap, n, blend, eva, evb, b1x);
 }
 
 void eidos_platform_show_capture(EidosPlatform *p, int screen, int bmode,
                                  float bfac)
 {
     if (p != NULL && p->gl != NULL) {
-        eidos_gl_show_capture(p->gl, screen, bmode, bfac);
+        eidos_gpu_show_capture(p->gl, screen, bmode, bfac);
     }
 }
 
@@ -2817,7 +2916,7 @@ static int screenshot_gl(EidosPlatform *p, const char *path)
         rects[i].h = vp.screen[i].h;
     }
     rgb = (u8 *)malloc((size_t)ow * (size_t)oh * 3u);
-    if (rgb == NULL || eidos_gl_grab(p->gl, ow, oh, rects, rgb) != 0) {
+    if (rgb == NULL || eidos_gpu_grab(p->gl, ow, oh, rects, rgb) != 0) {
         free(rgb);
         return -1;
     }

@@ -8,11 +8,47 @@ This file records that revision.
 
 ## The pin
 
-- Revision: `e3c8c25280ee23515c2b44975ce5565aa86597db`
-- Date: 2026-11-03
-- Subject: langmap: reference rows per owning overlay, rows for every data pointer, word_pairs.tsv
+- Revision: `7f30ac00d6fcdd7cf777bd582ac6f126d54906c5`
+- Date: 2026-11-06
+- Subject: ov010: the whiteout event's names (was CommProcEvent)
 
-The step from `abdddc9882`: an overlay's reference rows in
+The step from `56cb91a438`: names only, the ROM is byte-identical. The
+event every lost battle ends in is SCRCMD_NETWORK_CreateWhiteOutEvent (was
+SCRCMD_NETWORK_CreateCommProcEvent, ov010 0x0215F6E8), the function the
+port's `whiteout` event is bound to (mod/declared_set.txt), with
+SCRCMD_NETWORK_WhiteOutEventMain and the script commands
+SCRCMD_WORK_CmdEndScriptWhiteOutA and B.
+
+The step before, from `309be6b3ad`: four host guards where the DS runtime divide
+gives the dividend for a divisor of 0 and the host build trapped.
+SCROLLBAR_GetPosFromValue (arm9 comm_history.c) divides by a list's scroll
+range, 0 for a list with nothing to scroll, which crashed the Pokedex's
+first opening (issue #22); CircleGraph_ComputePercents (ov217) when every
+count is 0; and the download progress of Mystery Gift (ov121) and the Wi-Fi
+competition (ov175) while the total length is unknown.
+
+The step before, from `af2dbddd9b`: the language maps' word_pairs.tsv lists every
+data pointer word that two rows of its region read back as different
+English addresses (overlays sharing a window), with the English value.
+On another cartridge, ov010's shortcut table pointed at the party screen's
+process data through ov021's reference row (the overlay loaded at the time)
+instead of ov091's, so Pokemon and Options in the field menu crashed on
+every European Black cartridge.
+
+The step before, from `e3c8c25280`, is below.
+
+The step from `e3c8c25280`: four host fixes.  Three in ov121 mystery_album.c, for a
+received Pokemon gift's card.  MYSTERY_ALBUM_SetupIcons passed a palette's colours where
+CLACT_TransferPalette takes its header; the host build read a colour as an
+address and stopped when the card opened (173bd5719d); MYSTERY_ALBUM_PathAnimStep
+divides by a step's x distance, 0 on a step with no x movement, where the
+DS divide gives 0 (275e3aa76f), and by a step's frame count, 0 for one
+step, where the DS divide gives the dividend (64be06011c).  And arm9 OS_InitLock's
+"initialized" flag is a global on the host (bw_os_lock_initialized), which
+sdk/port_reset.c clears, so a soft reset fills the lock words again
+(af2dbddd9b).
+
+The step before, from `abdddc9882`: an overlay's reference rows in
 `layout/langmap/<target>.tsv` are now the owning region's own runs, with an
 owner column, and `word_pairs.tsv` lists the pointer words no run covers.
 Before, a reference run could bridge overlays that share a window: German

@@ -105,13 +105,11 @@ static u8 *rdp(const u8 *p, u32 off)
     return (u8 *)(uintptr_t)rd32(p, off);
 }
 
-/* A game pointer: inside the game's main RAM (the DS address space is
- * identity mapped in the port, so a game pointer is a host pointer). */
+/* A game pointer: inside the game's main RAM, wherever the host keeps it
+ * (sdk/dsmem.h, bw_ds_game_ptr). */
 static int gptr_ok(const void *p)
 {
-    uintptr_t a = (uintptr_t)p;
-
-    return a >= 0x02000000u && a < 0x02400000u && (a & 3u) == 0;
+    return bw_ds_game_ptr(p) && ((uintptr_t)p & 3u) == 0;
 }
 
 static int g_debug = -1;
@@ -560,7 +558,7 @@ static void mon_view(u8 *poke, MonView *m)
 static const char *item_name(int item, char *buf, int cap)
 {
     if (!msg_line(MSG_ITEM, (u32)item, buf, cap)) {
-        snprintf(buf, (size_t)cap, "ITEM %d", item);
+        snprintf(buf, (size_t)cap, ui_trf("ITEM %d"), item);
     }
     return buf;
 }
@@ -1256,6 +1254,18 @@ static int gauge_shown(int acc, int maxv, int tiles, int down, int fallback)
     return acc;
 }
 
+/*
+ * The game's gauge for view position vp (this file's 2..7).  The game
+ * numbers its gauges by its own view positions (BTL_MAIN_GetViewPosOfSlot):
+ * 0 and 1 in a single battle, 2..5 in a double and 2..7 in a triple
+ * (gViewPosOfSlotDouble {3, 5} / {2, 4}).  Reading vp - 2 in every rule
+ * showed one foe's plate in a double battle (#24).
+ */
+static int gauge_index(const Bt *b, int vp)
+{
+    return b->rule == 0 ? vp - 2 : vp;
+}
+
 /* Returns 1 and fills `g` when the gauge shows view position vp; 0 when the
  * slot is empty or hidden.  Returns -1 when there is no gauge to read. */
 static int gauge_read(const Bt *b, int vp, GaugeView *g)
@@ -1268,7 +1278,7 @@ static int gauge_read(const Bt *b, int vp, GaugeView *g)
     if (!gptr_ok(work) || vp < 2 || vp > 7) {
         return -1;
     }
-    slot = work + 0x40 + (u32)(vp - 2) * 0x80u;
+    slot = work + 0x40 + (u32)gauge_index(b, vp) * 0x80u;
     fl = rd32(slot, GAUGE_SLOT_FLAGS);
     if ((fl & GF_OCCUPIED) == 0 || (fl & GF_VISIBLE) == 0 || (fl & GF_HIDDEN) != 0) {
         return 0;
@@ -1291,6 +1301,24 @@ static int gauge_read(const Bt *b, int vp, GaugeView *g)
     g->exp = clampi(ex, 0, exmax > 0 ? exmax : 0);
     g->expmax = exmax;
     return 1;
+}
+
+/*
+ * The condition the game's gauge at view position vp shows, as
+ * ui_status_badge numbers it (-1: none).  The gauge's icon is set by
+ * BTLV_GAUGE_SetStatusIcon (stubs/ov/patch_ov094_btlv_gauge.c tells the
+ * port), so the badge comes and goes when the game's icon does (#24).
+ * Game order: 1 paralysis, 2 sleep, 3 freeze, 4 burn, 5 poison, 6 bad
+ * poison.
+ */
+extern int bw_ui_gauge_status_of(int slot) __attribute__((weak));
+
+static int gauge_badge(const Bt *b, int vp)
+{
+    static const signed char k_badge[7] = { -1, 1, 3, 4, 2, 0, 0 };
+    int st = bw_ui_gauge_status_of != NULL ? bw_ui_gauge_status_of(gauge_index(b, vp)) : 0;
+
+    return st >= 0 && st < 7 ? k_badge[st] : -1;
 }
 
 /* The experience bar of an own Pokemon: the part of this level done. */
@@ -1393,6 +1421,18 @@ static void shell_draw(EidosUiCtx *c, const Bt *b, const Shell *s, const char *p
         }
         mon_view(poke, &m);
         gs = gauge_read(b, vp, &gv);
+        if (debug_on()) {
+            static u32 last[8];
+            const u8 *gw = rdp(b->eff, 0x1A4);
+            u32 fl = gptr_ok(gw) ? rd32(gw + 0x40 + (u32)gauge_index(b, vp) * 0x80u, GAUGE_SLOT_FLAGS) : 0xFFFFFFFFu;
+            u32 key = (u32)gs << 24 ^ fl ^ (u32)m.species << 8 ^ (u32)gauge_badge(b, vp);
+
+            if (last[vp] != key) {
+                last[vp] = key;
+                fprintf(stderr, "eidos: plate vp %d species %d gauge %d flags %08X badge %d\n", vp,
+                        m.species, gs, fl, gauge_badge(b, vp));
+            }
+        }
         if (gs == 0) {
             continue;
         }
@@ -1402,6 +1442,7 @@ static void shell_draw(EidosUiCtx *c, const Bt *b, const Shell *s, const char *p
             m.level = gv.level;
         }
         ui_plate(c, 6, y, fw, m.name, m.gender, m.level, m.hp, m.maxhp, 0, 0);
+        ui_plate_status(c, 6, y, fw, m.level, gauge_badge(b, vp));
         y += 27;
     }
     memset(g_plate, 0, sizeof(g_plate));
@@ -1425,6 +1466,7 @@ static void shell_draw(EidosUiCtx *c, const Bt *b, const Shell *s, const char *p
             }
         }
         ui_plate(c, s->px, y, s->pw, m.name, m.gender, m.level, m.hp, m.maxhp, num, den);
+        ui_plate_status(c, s->px, y, s->pw, m.level, gauge_badge(b, s->own_vp[i]));
         if (i < 3) {
             g_plate[i].poke = poke;
             g_plate[i].x = s->px;
@@ -1553,7 +1595,7 @@ static const char *prompt_choosing(const Bt *b, char *buf, int cap)
 
     mon_view(gptr_ok(poke) ? poke : NULL, &m);
     if (!msg_line_sub(15, 69, m.name, buf, cap)) {
-        snprintf(buf, (size_t)cap, "What will %s do?", m.name);
+        snprintf(buf, (size_t)cap, ui_trf("What will %s do?"), m.name);
     }
     return buf;
 }
@@ -1926,15 +1968,15 @@ static int kit_type(int t)
  * game's own text. */
 static int move_name(int id, char *out, int cap)
 {
-    const char *modern = ui_move_name_modern(id);
+    const char *modern;
 
+    if (!msg_line(MSG_MOVE, (u32)id, out, cap)) {
+        snprintf(out, (size_t)cap, ui_trf("MOVE %d"), id);
+        return 0;
+    }
+    modern = ui_move_name_modern(id, out);
     if (modern != NULL) {
         snprintf(out, (size_t)cap, "%s", modern);
-        return 1;
-    }
-    if (!msg_line(MSG_MOVE, (u32)id, out, cap)) {
-        snprintf(out, (size_t)cap, "MOVE %d", id);
-        return 0;
     }
     return 1;
 }
@@ -2051,9 +2093,9 @@ static void move_run(EidosUiCtx *c, EidosUiView *view, const EidosUiFrame *in)
 
                 ui_category_icon(c, x0 + 2, info_y,
                                  mv[shown].category == 2 ? 1 : mv[shown].category == 1 ? 0 : 2);
-                snprintf(info, sizeof(info), "PWR %d  ACC %d", mv[shown].power, mv[shown].accuracy);
+                snprintf(info, sizeof(info), ui_trf("PWR %d  ACC %d"), mv[shown].power, mv[shown].accuracy);
                 if (mv[shown].power == 0) {
-                    snprintf(info, sizeof(info), "ACC %d", mv[shown].accuracy);
+                    snprintf(info, sizeof(info), ui_trf("ACC %d"), mv[shown].accuracy);
                 }
                 ui_text(c, x0 + 22, info_y + ui_text_y(11, UI_FONT_SMALL), info, UI_LIGHT, UI_EDGE,
                         UI_FONT_SMALL, 1);
@@ -2333,9 +2375,9 @@ static void target_run(EidosUiCtx *c, EidosUiView *view, const EidosUiFrame *in)
         char mname[40];
 
         if (!move_name((int)((raw >> 7) & 0xFFFFu), mname, sizeof(mname))) {
-            snprintf(mname, sizeof(mname), "the move");
+            snprintf(mname, sizeof(mname), "%s", ui_tr("the move"));
         }
-        snprintf(prompt_buf, sizeof(prompt_buf), "Use %s on which?", mname);
+        snprintf(prompt_buf, sizeof(prompt_buf), ui_trf("Use %s on which?"), mname);
     }
     shell_draw(c, &b, &sh, prompt_buf, 1);
     draw_hint_strip(c, 0, c->canvas->w, hints, 2, keys);
@@ -2973,7 +3015,7 @@ static void pl_summary(EidosUiCtx *c, const PlV *v, int ix, int iy, int iw, int 
                     continue;
                 }
                 if (!msg_line(MSG_MOVE, (u32)m.id, name, sizeof(name))) {
-                    snprintf(name, sizeof(name), "MOVE %d", m.id);
+                    snprintf(name, sizeof(name), ui_trf("MOVE %d"), m.id);
                 }
                 mst = can_tap ? hit(c, mx2, my2, mw2, 22) : 0;
                 sel = (mst & EIDOS_UI_HOVER) || i == shown || (v->cursor == i && eidos_ui_keys_lit());
@@ -3173,6 +3215,18 @@ static void pl_draw(EidosUiCtx *c, EidosUiView *view, const EidosUiFrame *in, u8
         msg_id = v.list_type == 3 ? 7 : v.list_type == 2 ? 9 : v.list_type == 8 ? 10 : 6;
         snprintf(msg, sizeof(msg), "%s", label(MSG_PLIST_UI, (u32)msg_id, "Choose a Pok\xC3\xA9mon.",
                                               buf, sizeof(buf)));
+        /* a Pokemon that cannot be chosen: the game's reason ("already in
+         * battle", "no energy left to battle") is in its string buffer while
+         * the game shows it (states 21 to 24), and the menu steps aside */
+        if ((rd32(plist, 0x2178) == 29 && rd32(plist, 0x217C) == 21) ||
+            (rd32(plist, 0x2178) >= 21 && rd32(plist, 0x2178) <= 24)) {
+            char why[96];
+
+            if (strbuf_text(rdp(plist, 0x1EA8), why, (int)sizeof(why))) {
+                snprintf(msg, sizeof(msg), "%s", why);
+                menu_open = 0;
+            }
+        }
         ui_panel(c, ix, msg_y, iw, msg_h, UI_CUT_TL | UI_CUT_BR, 5, UI_BODY, UI_EDGE, 235);
         ui_text(c, ix + 10, msg_y + ui_text_y(msg_h, UI_FONT_LARGE), msg, UI_WHITE, UI_EDGE,
                 UI_FONT_LARGE, 1);

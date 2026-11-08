@@ -49,6 +49,8 @@
 #include "input.h"
 #include "choice_list.h"
 #include "textbox.h"
+#include "item_show.h"
+#include "ui_lang.h"
 #include "overlay.h"
 
 #define WEAK __attribute__((weak))
@@ -61,6 +63,9 @@ static int union_card(EidosUiCtx *c, const EidosUiFrame *in, const struct FieldN
 static int entralink_card(EidosUiCtx *c, const EidosUiFrame *in);
 static int power_card(EidosUiCtx *c, const struct FieldNow *f);
 static void item_card(EidosUiCtx *c, const struct FieldNow *f, int text_up);
+static int item_show_active(void);
+static int cutin_other(const struct FieldNow *f);
+static void cutin_view(EidosUiView *view);
 extern void bw_mod_restart(u32 flags) WEAK;
 
 static void title_restart(void *arg)
@@ -1096,7 +1101,7 @@ static int field_match(void)
 
         logf_scene("field");
         /* the game's text at the game's own size */
-        if (ui_textbox_field_active(f.fm) || choices_now(&f, &list, &win)) {
+        if (ui_textbox_field_active(f.fm) || choices_now(&f, &list, &win) || item_show_active()) {
             eidos_ui_want_ds_scale();
         }
         return 1;
@@ -1211,22 +1216,43 @@ extern int ov012_UNION_MAIN_IsIdle(void *gameSystem) WEAK;
 /* A text box of the field is up this frame (field_text drew it). */
 static int g_text_up;
 
+/* Where the world's DS screen sits on the canvas (engine/platform/
+ * geometry.c): the window's height, centred, on a window 4:3 or wider; the
+ * window's width, centred, on a narrower one (a tablet held upright). */
+static void world_place(const EidosUiCtx *c, float *s, float *ox, float *oy)
+{
+    float cw = (float)c->canvas->w, ch = (float)c->canvas->h;
+
+    if (cw * 3.0f >= ch * 4.0f) {
+        *s = ch / 192.0f;
+        *ox = (cw - 256.0f * *s) * 0.5f;
+        *oy = 0.0f;
+    } else {
+        *s = cw / 256.0f;
+        *ox = 0.0f;
+        *oy = (ch - 192.0f * *s) * 0.5f;
+    }
+}
+
 static int field_text(EidosUiCtx *c, const FieldNow *f)
 {
     u8 *list = NULL, *win = NULL;
-    float s = (float)c->canvas->h / 192.0f;
+    float s, ox, oy;
     u32 hide;
     int text;
 
+    world_place(c, &s, &ox, &oy);
     if (bw_ui_text_set_own != NULL) {
         bw_ui_text_set_own(1);
     }
     (void)choices_now(f, &list, &win);
-    hide = ui_textbox_field(c, f->fm, ((float)c->canvas->w - 256.0f * s) * 0.5f, 0.0f, s, win);
+    hide = ui_textbox_field(c, f->fm, ox, oy, s, win);
     if (win != NULL && win[2] < 4) {
         hide |= 1u << win[2];           /* an open list's window: ours shows */
     }
-    item_card(c, f, hide != 0);
+    /* the card goes with the box: not while the game holds its window open
+     * with the text already cleared (it closes it some frames later) */
+    item_card(c, f, hide != 0 && ui_textbox_field_drawn() > 0);
     text = hide != 0;
     /* the season's scoreboard stays the game's own (the player prefers it);
      * the game's place-name banner is left out: the bar's name changes
@@ -1263,6 +1289,7 @@ typedef struct ItemCard {
 } ItemCard;
 
 static ItemCard g_item_card;
+static int g_item_card_drawn;   /* item_card drew this frame              */
 static u32 g_item_seen;     /* the item serial last frame                 */
 static u32 g_item_age;      /* frames since it changed                    */
 static int g_item_show;     /* this message is the item's                 */
@@ -1289,6 +1316,59 @@ static void item_card_make(void *arg)
     k->ready = 1;
 }
 
+/*
+ * The badges: their cut-in is the key items' with a badge (ov021 FLD3D_CI
+ * sequence 2 for the Trio Badge, 4 to 10 for the Basic to the Legend Badge;
+ * 45 plays the Bolt Badge's again), so the showcase shows it the same way,
+ * with the badge as the badge case draws it (ui_badge_image), its name from
+ * the Trainer Card's texts (a/0/0/2 bank 187, line 88 + 3 x badge, its
+ * first line) and "BADGE" on the card, which stays over the game's
+ * "received the ... Badge" message as an item's card does.
+ */
+static int g_badge_card;            /* 1 + the badge whose card stands      */
+static int g_badge_card_text;       /* its message has been up              */
+static u32 g_badge_card_age;
+
+static int badge_of_sequence(int seq)
+{
+    return seq == 2 ? 0 : (seq >= 4 && seq <= 10) ? seq - 3 : seq == 45 ? 3 : -1;
+}
+
+static void badge_name(int badge, char *out, int cap)
+{
+    const char *t = ui_game_text(2, 187, 88u + 3u * (u32)badge);
+    int n = 0;
+
+    while (t != NULL && t[n] != '\0' && t[n] != '\n' && t[n] != '\r' && n < cap - 1) {
+        out[n] = t[n];
+        n++;
+    }
+    out[n] = '\0';
+}
+
+static int badge_card(EidosUiCtx *c, int text_up)
+{
+    int cw = c->canvas->w, ch = c->canvas->h, w;
+    char name[48];
+    const char *pocket = ui_tr("BADGE");
+
+    if (g_badge_card == 0) {
+        return 0;
+    }
+    if (!text_up) {
+        /* gone with its message, or never up after a while */
+        if (g_badge_card_text || ++g_badge_card_age > 300u) {
+            g_badge_card = 0;
+        }
+        return 0;
+    }
+    g_badge_card_text = 1;
+    badge_name(g_badge_card - 1, name, (int)sizeof name);
+    w = item_card_width(name, pocket);
+    item_card_draw(c, (cw - w) / 2, ITEM_CARD_Y(ch), w, ui_badge_image(g_badge_card - 1), name, pocket);
+    return 1;
+}
+
 static void item_card(EidosUiCtx *c, const FieldNow *f, int text_up)
 {
     u32 serial = 0, item;
@@ -1296,6 +1376,11 @@ static void item_card(EidosUiCtx *c, const FieldNow *f, int text_up)
     const UiImage *ic;
     const char *pocket;
 
+    g_item_card_drawn = 0;
+    if (badge_card(c, text_up)) {
+        g_item_card_drawn = 1;
+        return;
+    }
     if (bw_ui_item_last == NULL) {
         return;
     }
@@ -1326,38 +1411,329 @@ static void item_card(EidosUiCtx *c, const FieldNow *f, int text_up)
             return;
         }
     }
-    if (!g_item_card.ready) {
-        return;
+    if (!g_item_card.ready || item_show_active()) {
+        return;                 /* (the showcase draws the card it forms) */
     }
     pocket = g_item_card.pocket < 5 ? ui_game_text(2, 0x37, g_item_card.pocket) : "";
     ic = ui_item_icon((u16)item);
-    w = ui_text_w(g_item_card.name, UI_FONT_LARGE);
-    if (ui_text_w(pocket, UI_FONT_SMALL) > w) w = ui_text_w(pocket, UI_FONT_SMALL);
-    w += 50;
+    w = item_card_width(g_item_card.name, pocket);
     x = (cw - w) / 2;
-    y = ch - 4 - 42 - 8 - 34;           /* above the box at the bottom      */
-    ui_panel(c, x, y, w, 34, UI_CUT_TL | UI_CUT_BR, 6, 0x000000u, 0x464850u, 240);
-    ui_panel(c, x + 4, y + 3, 28, 28, UI_CUT_TL | UI_CUT_BR, 4, UI_BODY2, 0x008BACu, 255);
-    if (ic != NULL) {
-        ui_image(c, x + 6, y + 5, ic, 1);
+    y = ITEM_CARD_Y(ch);
+    item_card_draw(c, x, y, w, ic, g_item_card.name, pocket);
+    g_item_card_drawn = 1;
+}
+
+/*
+ * The key-item showcase (engine/ui/item_show.c): the game's cut-in for a
+ * key item (ov021 FLD3D_CI, the flash and the item spinning out of a glow
+ * during the jingle) is drawn on the DS screen alone, which the one-screen
+ * world does not show.  While it runs, the world holds its last wide
+ * picture (the game froze its own screen the same way) and the interface
+ * plays its own version, which ends as the item card.  The cut-in tells
+ * the port its item (bw_ui_cutin_item, stubs/ov/patch_ov021_fld_wipe_3dobj.c);
+ * the item card takes over once the "obtained" message opens.
+ */
+extern u32 bw_ui_cutin_last(u32 *serial) WEAK;
+extern int ov021_FLD3D_CI_EventMain(void *event, int *state, void *work) WEAK;
+
+typedef struct ItemShow {
+    u32 serial;             /* the cut-in it is for                         */
+    int on;
+    int t;                  /* frames since the cut-in began                */
+    u32 start, end;         /* the game frames it began and ended at        */
+    int ended;              /* frames since it ended, 0 while it runs       */
+    ItemCard card;          /* the name and pocket, read on the game thread */
+    int badge;              /* 1 + the badge (0 Trio .. 7 Legend) it shows,
+                               0 for a key item                             */
+    int badge_seen;         /* this cut-in's badge was shown                */
+} ItemShow;
+
+static ItemShow g_show;
+
+/* The showcase is up (the field asks for the DS text scale then too, so
+ * the card it ends as is the size of the one over the message). */
+static int item_show_active(void)
+{
+    return g_show.on;
+}
+
+/* The game's cut-in event is running (it, or a task it pushed). */
+static int cutin_running(const FieldNow *f)
+{
+    const u8 *ev;
+    int i;
+
+    if (GAMESYSTEM_GetEvent == NULL || ov021_FLD3D_CI_EventMain == NULL || f->gs == NULL) {
+        return 0;
     }
-    ui_text(c, x + 38, y + 2, g_item_card.name, UI_WHITE, 0x464850u, UI_FONT_LARGE, 1);
-    ui_text(c, x + 38, y + 20, pocket, 0x008BACu, 0x313131u, UI_FONT_SMALL, 1);
+    ev = (const u8 *)GAMESYSTEM_GetEvent(f->gs);
+    for (i = 0; i < 4 && ev != NULL; i++) {
+        if (*(void *const *)(ev + sizeof(void *)) == (void *)ov021_FLD3D_CI_EventMain) {
+            return 1;
+        }
+        ev = *(const u8 *const *)ev;
+    }
+    return 0;
+}
+
+/*
+ * The field moves' cut-in (Cut, Strength, Surf and the others: ov021
+ * FLD3D_CI sequence 3, FLD3D_CI_StartPokemonSequence) in the interface's
+ * style.  The game's: a white flash, then a cyan band across the middle of
+ * its screen with speed streaks, the Pokemon crossing it from the right
+ * edge to the left, the band closing (about 90 frames).  On one screen the
+ * band crosses the whole window, the Pokemon is its animated front picture,
+ * and the world holds its last wide picture under it, as for the key
+ * items.  The cut-in's state is the game's own (Fld3dCi, FieldMap.fld3dCi:
+ * sequenceId +0x66, the Pokemon's species +0x9C, form +0xA0, shininess
+ * +0xA8, ov021/fld3d_ci_types.h).
+ */
+extern void *ov021_FIELDMAP_GetFld3dCi(void *fieldMap) WEAK;
+
+#define MS_SEQ_POKEMON 3
+
+static struct {
+    int on;
+    u32 start;              /* the game frame the cut-in began at           */
+    int species, shiny;
+} g_mon_show;
+
+/* The running cut-in's sequence id, -1 when none. */
+static int cutin_sequence(const FieldNow *f, const u8 **ci_out)
+{
+    const u8 *ci;
+
+    if (!cutin_running(f) || ov021_FIELDMAP_GetFld3dCi == NULL || f->fm == NULL) {
+        return -1;
+    }
+    ci = (const u8 *)ov021_FIELDMAP_GetFld3dCi(f->fm);
+    if (ci == NULL) {
+        return -1;
+    }
+    if (ci_out != NULL) {
+        *ci_out = ci;
+    }
+    return (int)rd16(ci + 0x66);
+}
+
+/* One frame: 1 while the cut-in holds the world. */
+static int mon_show(EidosUiCtx *c, const FieldNow *f)
+{
+    const u8 *ci = NULL;
+    int seq = cutin_sequence(f, &ci);
+    int cw = c->canvas->w, ch = c->canvas->h;
+    u32 now = bw_input_frame_number();
+    int t, bh, by, i;
+    float open;
+
+    if (seq != MS_SEQ_POKEMON) {
+        g_mon_show.on = 0;
+        return 0;
+    }
+    if (!g_mon_show.on) {
+        g_mon_show.on = 1;
+        g_mon_show.start = now;
+        g_mon_show.species = (int)rd32(ci + 0x9C);
+        g_mon_show.shiny = rd32(ci + 0xA8) != 0;
+    }
+    t = (int)(now - g_mon_show.start);
+
+    /* the flash (the game's, frames 6 to 26) */
+    if (t < 28) {
+        int a = t < 6 ? t * 255 / 6 : t < 20 ? 255 : (28 - t) * 255 / 8;
+
+        ui_fill(c, 0, 0, cw, ch, UI_WHITE, a < 0 ? 0 : a);
+        if (t < 20) {
+            return 1;
+        }
+    }
+    /* the band: opens from 26, closes from 86 */
+    open = t < 26 ? 0.f : t < 32 ? (float)(t - 26) / 6.f : t < 86 ? 1.f : t < 94 ? (float)(94 - t) / 8.f : 0.f;
+    if (open <= 0.f) {
+        return 1;
+    }
+    bh = (int)((float)ch * 0.40f * open);
+    by = ch / 2 - bh / 2;
+    for (i = 0; i < bh; i++) {
+        /* cyan, lighter towards the middle */
+        float d = bh > 1 ? fabsf((float)i / (float)(bh - 1) * 2.f - 1.f) : 0.f;
+        int r = (int)(0x9A - 0x8A * d), g = (int)(0xEE - 0x40 * d), b = (int)(0xFF - 0x10 * d);
+
+        ui_fill(c, 0, by + i, cw, 1, (u32)(r << 16 | g << 8 | b), 235);
+    }
+    ui_fill(c, 0, by, cw, 2, UI_WHITE, 220);
+    ui_fill(c, 0, by + bh - 2, cw, 2, UI_WHITE, 220);
+    /* speed streaks, racing left */
+    for (i = 0; i < 14 && bh > 12; i++) {
+        u32 h = (u32)i * 2654435761u;
+        int len = cw / 10 + (int)(h >> 26) * cw / 160;
+        int sy = by + 4 + (int)((h >> 8) % (u32)(bh - 8));
+        int speed = cw / 24 + (int)((h >> 20) & 15);
+        int sx = cw - (int)(((u32)t * (u32)speed + (h >> 4)) % (u32)(cw + len));
+
+        ui_fill(c, sx, sy, len, 2, UI_WHITE, 170);
+    }
+    /* the Pokemon, crossing at a steady pace (the game's: the right edge at
+     * 30, the left by 88) */
+    if (t >= 28 && t < 90 && g_mon_show.species > 0) {
+        int size = (int)((float)ch * 0.40f * 0.9f);
+        float k = (float)(t - 28) / 60.f;
+        int mx = (int)((float)cw - k * (float)(cw + size)) ;
+        int my = ch / 2 - size / 2;
+
+        ui_mon_front_draw(c, (u16)g_mon_show.species, g_mon_show.shiny, now, mx, my, size, size);
+    }
+    return 1;
+}
+
+/* One frame: 1 while the showcase holds the world (the caller keeps the
+ * world's last wide picture and leaves the game's capture out). */
+static int item_show(EidosUiCtx *c, const FieldNow *f)
+{
+    u32 serial = 0, item;
+    int cw = c->canvas->w, ch = c->canvas->h, w, cx, cy;
+    float s, ox, oy, fr;
+    u32 now;
+    const char *pocket;
+
+    if (bw_ui_cutin_last == NULL) {
+        return 0;
+    }
+    item = bw_ui_cutin_last(&serial);
+    if (serial != g_show.serial) {
+        /* a new cut-in: its name and its pocket, read by the game's thread */
+        g_show.serial = serial;
+        g_show.on = item != 0 && item <= 0x400;
+        g_show.t = 0;
+        g_show.ended = 0;
+        g_show.badge = 0;
+        g_show.card.item = item;
+        g_show.card.ready = 0;
+        g_show.card.fm = f->fm;
+        if (g_show.on && !eidos_ui_game_call(item_card_make, &g_show.card)) {
+            g_show.on = 0;
+        }
+    }
+    if (!g_show.on) {
+        /* a badge's cut-in: the same showcase, once per cut-in */
+        int seq = cutin_sequence(f, NULL), b = badge_of_sequence(seq);
+
+        if (seq < 0) {
+            g_show.badge_seen = 0;
+        } else if (b >= 0 && !g_show.badge_seen && ui_badge_image(b) != NULL) {
+            g_show.badge_seen = 1;
+            g_show.on = 1;
+            g_show.t = 0;
+            g_show.ended = 0;
+            g_show.badge = b + 1;
+            badge_name(b, g_show.card.name, (int)sizeof g_show.card.name);
+            g_show.card.ready = 1;
+            g_badge_card = 0;
+        }
+    }
+    if (!g_show.on) {
+        return 0;
+    }
+    /* the game's own frames, so the showcase keeps the game's time at any
+     * speed: t since the cut-in began, ended since it ended */
+    now = bw_input_frame_number();
+    if (g_show.t == 0 && g_show.ended == 0) {
+        g_show.start = now;
+    }
+    g_show.t = (int)(now - g_show.start) + 1;
+    if (g_show.ended == 0 && !cutin_running(f) && g_show.t > 10) {
+        g_show.end = now;
+        g_show.ended = 1;
+    } else if (g_show.ended > 0) {
+        g_show.ended = (int)(now - g_show.end) + 1;
+    }
+    if (!g_show.card.ready) {
+        return 1;
+    }
+    /* the mock-up's frame: the game's flash comes 7 frames into the
+     * cut-in; the entrance plays up to the hold, which lasts as long as
+     * the cut-in does; once it ends (the message opens two frames later)
+     * the item goes down into the card over 30 frames, so the card forms
+     * as the message opens, never before it */
+    fr = (float)(g_show.t - 7) * 146.f / 161.f;
+    if (fr > ITEM_SHOW_HOLD) {
+        fr = ITEM_SHOW_HOLD;
+    }
+    if (g_show.ended > 0) {
+        fr = ITEM_SHOW_HOLD + (float)g_show.ended * (ITEM_SHOW_END - ITEM_SHOW_HOLD) / 30.f;
+    }
+    if (fr >= ITEM_SHOW_END || g_show.ended > 90) {
+        /* the card is whole: drawn this frame once more (item_card ran
+         * already, held back), and the "obtained" message's card has it
+         * from the next, at the same place */
+        fr = ITEM_SHOW_END;
+        g_show.on = 0;
+        if (g_show.badge > 0) {
+            /* the card stays over the badge's message (badge_card) */
+            g_badge_card = g_show.badge;
+            g_badge_card_text = 0;
+            g_badge_card_age = 0;
+            g_show.badge = 0;
+        }
+    }
+    if (fr < 0.f) {
+        return 1;
+    }
+    world_place(c, &s, &ox, &oy);
+    /* the middle of the DS screen, where the game's own cut-in shows the
+     * item */
+    cx = (int)(ox + 128.f * s);
+    cy = (int)(oy + 96.f * s);
+    if (g_show.badge > 0) {
+        pocket = ui_tr("BADGE");
+    } else {
+        pocket = g_show.card.pocket < 5 ? ui_game_text(2, 0x37, g_show.card.pocket) : "";
+    }
+    w = item_card_width(g_show.card.name, pocket);
+    item_show_draw(c, fr, (float)(g_show.t - 7) * 146.f / 161.f, cx, cy, (cw - w) / 2, ITEM_CARD_Y(ch), w,
+                   g_show.badge > 0 ? ui_badge_image(g_show.badge - 1) : ui_item_icon((u16)g_show.card.item),
+                   g_show.card.name, pocket);
+    return 1;
+}
+
+/*
+ * The game's other cut-ins (ov021 FLD3D_CI: a trainer's VS banner before a
+ * story battle, a Pokemon's cut-in for a field move): the game draws them
+ * with its 3D over a capture of its screen.  The one-screen world showed
+ * the capture's still picture and left them out.  While one runs, the world
+ * is live with the game's 2D, so the cut-in's 3D shows (the GPU draws it at
+ * the window's size: the VS banner crosses the whole window), and beyond the
+ * DS screen, where the game has only its backdrop colour, the field's kept
+ * wide picture shows instead (held_backdrop).
+ */
+static int cutin_other(const FieldNow *f)
+{
+    return !g_show.on && !g_mon_show.on && cutin_running(f);
+}
+
+static void cutin_view(EidosUiView *view)
+{
+    view->hide_2d = 0;
+    view->cap_mix = 0;
+    view->stretch = 0;
+    view->hold_world = 0;
+    view->held_backdrop = 1;
 }
 
 static int field_choices(EidosUiCtx *c, const EidosUiFrame *in, const FieldNow *f)
 {
     u8 *list, *win;
-    float s = (float)c->canvas->h / 192.0f;
+    float s, ox, oy;
     int style;
 
+    world_place(c, &s, &ox, &oy);
     if (!choices_now(f, &list, &win)) {
         ui_choice_list_idle();
         return 0;
     }
     /* the list takes the style of the box it answers */
     style = ui_textbox_field_kind(f->fm, win) == UI_TEXTBOX_SYSTEM ? UI_CHOICE_SYSTEM : UI_CHOICE_WHITE;
-    if (!ui_choice_list(c, in, list, win, ((float)c->canvas->w - 256.0f * s) * 0.5f, 0.0f, s, style)) {
+    if (!ui_choice_list(c, in, list, win, ox, oy, s, style)) {
         return 0;
     }
     if (right_click(in)) {
@@ -1431,6 +1807,26 @@ static int small_button(EidosUiCtx *c, int *x, int y, const char *label, int h,
     return st;
 }
 
+/* The C-Gear button as its mark alone (a ring with its bar), for a bar
+ * too narrow for the word; the same place and clicks as small_button. */
+static int cgear_mark_button(EidosUiCtx *c, int *x, int h)
+{
+    int w = 20, xx = *x - w, st, cy = h / 2;
+    EidosUiRect r;
+
+    r.x = xx;
+    r.y = 0;
+    r.w = w;
+    r.h = h;
+    st = eidos_ui_hit(r);
+    ui_panel(c, xx, 1, w, h - 2, UI_CUT_TL | UI_CUT_BR, 3,
+             (st & EIDOS_UI_HOVER) ? UI_EDGE : UI_BODY, (st & EIDOS_UI_HOVER) ? UI_CYAN : UI_EDGE2, 240);
+    ui_ellipse(c, xx + 5, cy - 5, 10, 10, UI_BODY, UI_WHITE, 255);
+    ui_fill(c, xx + 9, cy - 1, 2, 2, UI_CYAN, 255);
+    *x = xx - 4;
+    return st;
+}
+
 /*
  * The game's own lower screen as a sheet over the world, in the one-screen
  * view: the C-Gear (its wireless and IR panels, the survey radar), and the
@@ -1483,8 +1879,9 @@ static int lower_sheet(EidosUiCtx *c, const EidosUiFrame *in, int cw, int ch,
  * orange), each lit while that channel has someone, and a C-Gear button
  * for the game's whole lower screen (the survey, the settings).  A channel
  * button taps that channel's hexagon on the game's C-Gear, so the game
- * opens the app it opens for a stylus (the Wireless and IR apps then take
- * the window, lower-only).  Returns 1 to close, 2 for the whole C-Gear.
+ * opens the app it opens for a stylus (the Wireless app then takes the
+ * window, lower-only).  IR is greyed out and takes no click: eidos has no
+ * infrared link yet.  Returns 1 to close, 2 for the whole C-Gear.
  */
 static int cgear_drop(EidosUiCtx *c, const EidosUiFrame *in, int cw, int top,
                       int wireless_lit, int online_lit, int on)
@@ -1516,16 +1913,17 @@ static int cgear_drop(EidosUiCtx *c, const EidosUiFrame *in, int cw, int top,
     for (i = 0; i < 3; i++) {
         int bx = x0 + pad + i * (bw + gap), by = y0 + pad;
         EidosUiRect r = { bx, by, bw, bhh };
-        int st = eidos_ui_hit(r);
+        /* IR is greyed out: eidos has no infrared link yet */
+        int ir = i == 0, st = ir ? 0 : eidos_ui_hit(r);
         u32 col = ch[i].colour;
-        const char *status = on ? "On" : "Off";
+        const char *status = ir ? "Not available" : on ? "On" : "Off";
 
         ui_panel(c, bx, by, bw, bhh, UI_CUT_TL | UI_CUT_BR, 4,
-                 (st & EIDOS_UI_HOVER) ? UI_EDGE : UI_BODY2, lit[i] ? col : UI_EDGE2, 245);
+                 (st & EIDOS_UI_HOVER) ? UI_EDGE : UI_BODY2, lit[i] ? col : UI_EDGE2, ir ? 150 : 245);
         ui_fill(c, bx + 4, by + 4, 3, bhh - 8, lit[i] ? col : UI_EDGE2, 255);
-        ui_text(c, bx + 11, by + 3, ch[i].name, lit[i] ? UI_WHITE : UI_LIGHT, UI_EDGE,
+        ui_text(c, bx + 11, by + 3, ch[i].name, ir ? UI_GREY : lit[i] ? UI_WHITE : UI_LIGHT, UI_EDGE,
                 UI_FONT_SMALL, 1);
-        ui_text(c, bx + 11, by + 15, status, lit[i] ? col : UI_GREY, -1, UI_FONT_SMALL, 1);
+        ui_text(c, bx + 11, by + 15, status, ir ? UI_EDGE2 : lit[i] ? col : UI_GREY, -1, UI_FONT_SMALL, 1);
         if (st & EIDOS_UI_CLICK) {
             eidos_ui_tap(ch[i].tx, ch[i].ty, 3);
             res = 1;
@@ -1725,6 +2123,10 @@ static void field_run(EidosUiCtx *c, EidosUiView *view, const EidosUiFrame *in)
         view->hide_2d = capture_bg_shown();
         view->cap_mix = capture_mix();
         view->stretch = encounter_effect();
+        if (cutin_other(&f)) {
+            /* a cut-in as the battle starts (the VS banner) */
+            cutin_view(view);
+        }
         return;
     }
     {
@@ -1787,8 +2189,21 @@ static void field_run(EidosUiCtx *c, EidosUiView *view, const EidosUiFrame *in)
      * after.  It stays through the game's place-name banner: its own name
      * changes instead. */
     g_text_up = 0;
+    g_item_card_drawn = 0;
     if (!plain_field()) {
         g_text_up = field_text(c, &f);
+    }
+    if (item_show(c, &f) || mon_show(c, &f)) {
+        /* the game's cut-in freezes its screen (a capture behind its 3D)
+         * and flashes it white: the world holds its last wide picture from
+         * the cut-in's start instead, under ours, so the kept picture is
+         * never the white flash */
+        view->hide_2d = 1;
+        view->cap_mix = 0;
+        view->hold_world = 1;
+    } else if (cutin_other(&f)) {
+        /* another cut-in (a VS banner) */
+        cutin_view(view);
     }
     choosing = !plain_field() && field_choices(c, in, &f);
     if (choosing) {
@@ -1926,7 +2341,15 @@ static void field_run(EidosUiCtx *c, EidosUiView *view, const EidosUiFrame *in)
         st_bar = 0;
     }
     if (f.mode == 0 || f.mode == 8) {           /* this save has a C-Gear */
-        st = small_button(c, &x, 0, "C-GEAR", bh, NULL);
+        /* a narrow window (an iPad): when the place name would not fit
+         * beside the full button, the button is the C-Gear's mark alone */
+        int name_room = x - small_button_w("C-GEAR", NULL) - 4 - 2 - (14 + c->safe_l);
+
+        if (ui_text_w(place, UI_FONT_LARGE) > name_room) {
+            st = cgear_mark_button(c, &x, bh);
+        } else {
+            st = small_button(c, &x, 0, "C-GEAR", bh, NULL);
+        }
         if (st & EIDOS_UI_CLICK) {
             g_show_cgear = g_show_cgear ? 0 : 1;
             st_bar = 0;
@@ -1961,10 +2384,13 @@ static void field_run(EidosUiCtx *c, EidosUiView *view, const EidosUiFrame *in)
                                           : (int)((g_bar_fade - NAME_OUT) * 255u / NAME_IN);
                 g_bar_fade++;
             }
+            /* a name still too long for the room takes the small font */
+            int font = ui_text_w(shown, UI_FONT_LARGE) > x - 2 - px ? UI_FONT_SMALL : UI_FONT_LARGE;
+
             ui_push(c, 0, 0, &saved);
             ui_clip(c, px, 0, x - 2 - px, bh);
-            ui_text(c, px, ui_text_y(bh, UI_FONT_LARGE), shown, mix_rgb(UI_WHITE, BAR_INK, a),
-                    a < 128 ? (s32)BAR_INK : (s32)UI_EDGE, UI_FONT_LARGE, 1);
+            ui_text(c, px, ui_text_y(bh, font), shown, mix_rgb(UI_WHITE, BAR_INK, a),
+                    a < 128 ? (s32)BAR_INK : (s32)UI_EDGE, font, 1);
             ui_pop(c, 0, 0, &saved);
         }
     }

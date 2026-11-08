@@ -7,7 +7,9 @@
 //! and mod list in the invite, and the mods index. Today an invite link only
 //! launches the chosen profile with the join argument.
 
+mod catalog;
 mod datamove;
+mod ghdownload;
 mod launch;
 mod layout;
 mod mods;
@@ -98,6 +100,9 @@ struct Remote {
 #[tauri::command]
 fn overview(app: State<App>) -> R<Overview> {
     let s = app.settings();
+    for p in profile::list(&app.layout).map_err(|e| e.to_string())? {
+        fit_profile(&app, &p.name);
+    }
     let profiles = profile::list(&app.layout).map_err(|e| e.to_string())?;
     let local_ok = s
         .local_build
@@ -118,7 +123,25 @@ fn overview(app: State<App>) -> R<Overview> {
 
 #[tauri::command]
 fn create_profile(app: State<App>, name: String, version: String) -> R<profile::Profile> {
-    profile::create(&app.layout, &name, &version)
+    profile::create(&app.layout, &name, &version)?;
+    fit_profile(&app, &name);
+    profile::get(&app.layout, &name)
+}
+
+/// A profile whose game and language have no ROM plays the one the library
+/// has, when there is only one to play (rom::fit): a library of Italian
+/// Black alone makes every profile Italian Black, with nothing to choose.
+fn fit_profile(app: &App, name: &str) {
+    let Ok(p) = profile::get(&app.layout, name) else {
+        return;
+    };
+    if app.running.lock().unwrap().contains_key(name) {
+        return;
+    }
+    if let Some((game, language)) = rom::fit_in(&app.settings().roms, &p.game, &p.language, profile::is_game_profile(name)) {
+        let _ = profile::set_game(&app.layout, name, game);
+        let _ = profile::set_language(&app.layout, name, language);
+    }
 }
 
 #[tauri::command]
@@ -237,13 +260,13 @@ fn install_blocking(
     let result = (|| -> R<()> {
         stage("Downloading the checksums");
         let sums_path = tmp.join("SHA256SUMS");
-        releases::download(sums_asset, s.token(), &sums_path, None).map_err(|e| e.to_string())?;
+        ghdownload::download(sums_asset, s.token(), &sums_path, None)?;
         let sums = std::fs::read_to_string(&sums_path).map_err(|e| e.to_string())?;
         let want = releases::checksum_for(&sums, &asset.name)
             .ok_or_else(|| format!("SHA256SUMS has no entry for {}.", asset.name))?;
         stage("Downloading eidos");
         let file = tmp.join(&asset.name);
-        releases::download(asset, s.token(), &file, Some(&want)).map_err(|e| e.to_string())?;
+        ghdownload::download(asset, s.token(), &file, Some(&want))?;
         stage("Unpacking");
         if asset.name.to_lowercase().ends_with(".zip") {
             versions::unzip(&file, &dest).map_err(|e| e.to_string())
@@ -319,8 +342,9 @@ fn play(
     join: Option<String>,
     layout: Option<String>,
 ) -> R<Started> {
-    let p = profile::get(&app.layout, &name)?;
     app.refuse_if_running(&name)?;
+    fit_profile(&app, &name);
+    let p = profile::get(&app.layout, &name)?;
     let s = app.settings();
     let v = versions::resolve(&app.layout, s.local_build.as_deref(), &p.version)?;
     let join = match join {
@@ -338,7 +362,16 @@ fn play(
     let code = rom::code_for(&p.game, &p.language)
         .ok_or("eidos does not play that language yet.")?;
     let chosen = rom::with_code(&s.roms, &code).ok_or_else(|| {
-        format!("There is no ROM for this profile's game and language ({code}). Add it in Settings, ROMs.")
+        let have: Vec<String> = rom::playable(&s.roms).iter().map(|e| rom::describe(&e.code)).collect();
+        if have.is_empty() {
+            format!("This profile plays {}, and there is no ROM yet. Add one in Settings, ROMs.", rom::describe(&code))
+        } else {
+            format!(
+                "This profile plays {}, and your ROMs are {}. Change the profile's game or language in Profiles, or add that ROM in Settings, ROMs.",
+                rom::describe(&code),
+                have.join("; ")
+            )
+        }
     })?;
     let home = game_home();
     if let Some(home) = &home {
@@ -402,6 +435,28 @@ fn mods_add(app: State<App>, profile: String, path: String) -> R<String> {
     }
 }
 
+/// The mods of the katalogos index (or the index the settings name).  Runs
+/// off the main thread: it downloads one small file per mod.
+#[tauri::command]
+async fn catalog_list(app: State<'_, App>) -> R<catalog::Catalog> {
+    let url = app.settings().index_url;
+    let cache = app.layout.launcher().join("katalogos-cache");
+    tauri::async_runtime::spawn_blocking(move || catalog::list(&url, &cache))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Installs or updates the index's mod at `index` in a profile.
+#[tauri::command]
+async fn catalog_install(app: State<'_, App>, profile: String, index: usize) -> R<String> {
+    app.refuse_if_running(&profile)?;
+    let dir = profile_dir(&app, &profile)?;
+    let url = app.settings().index_url;
+    tauri::async_runtime::spawn_blocking(move || catalog::install(&dir, &url, index))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 /// Opens the user folder, or a profile's folder, mods folder or saves folder.
 #[tauri::command]
 fn open_folder(app: State<App>, what: String, profile: Option<String>) -> R<()> {
@@ -453,15 +508,15 @@ fn save_roms(app: &App, s: &Settings) -> R<()> {
     Ok(())
 }
 
-/// The legendary on a game's box (Zekrom on Black, Reshiram on White), its
+/// The legendary on a game's box (Reshiram on Black, Zekrom on White), its
 /// front battle sprite drawn from a ROM of that game in the library, as PNG.
 /// None when the library holds no ROM of that game: the page then shows the
 /// eidos dragon. Nothing is stored; the picture comes from the player's ROM.
 #[tauri::command]
 async fn cover_art(app: State<'_, App>, game: String) -> R<Option<Vec<u8>>> {
     let (prefix, species) = match game.as_str() {
-        "white" => ("IRA", nds::sprite::RESHIRAM),
-        _ => ("IRB", nds::sprite::ZEKROM),
+        "white" => ("IRA", nds::sprite::ZEKROM),
+        _ => ("IRB", nds::sprite::RESHIRAM),
     };
     let roms = app.settings().roms;
     for e in roms.iter().filter(|e| e.code.starts_with(prefix)) {
@@ -565,6 +620,23 @@ async fn species_art(app: State<'_, App>, species: u16, game: String) -> R<Optio
     Ok(None)
 }
 
+/// An item's bag icon from any ROM in the library (a mod's icon). None
+/// without a ROM.
+#[tauri::command]
+async fn item_art(app: State<'_, App>, item: u16) -> R<Option<Vec<u8>>> {
+    for game in ["black", "white"] {
+        for path in roms_of(&app, game, None) {
+            let Ok(rom) = nds::rom::Rom::open(&path) else {
+                continue;
+            };
+            if let Ok(img) = nds::item::item_icon(&rom, item) {
+                return Ok(Some(nds::image::encode_png(&centre(&img))));
+            }
+        }
+    }
+    Ok(None)
+}
+
 #[derive(Serialize)]
 struct BadgeArt {
     /// The eight badges, in award order, as PNG.
@@ -643,22 +715,10 @@ fn tight_crop(img: &nds::image::Rgba) -> nds::image::Rgba {
 /// The smallest square around the picture's opaque pixels, the picture
 /// centred in it (at least 8x8; the whole picture when it is empty).
 fn square_crop(img: &nds::image::Rgba) -> nds::image::Rgba {
-    let (w, h) = (img.width, img.height);
-    let opaque = |x: usize, y: usize| img.pixels[(y * w + x) * 4 + 3] > 0;
-    let (mut x0, mut y0, mut x1, mut y1) = (w, h, 0, 0);
-    for y in 0..h {
-        for x in 0..w {
-            if opaque(x, y) {
-                x0 = x0.min(x);
-                y0 = y0.min(y);
-                x1 = x1.max(x + 1);
-                y1 = y1.max(y + 1);
-            }
-        }
-    }
-    if x1 <= x0 {
+    let w = img.width;
+    let Some((x0, y0, x1, y1)) = opaque_box(img) else {
         return img.clone();
-    }
+    };
     let side = (x1 - x0).max(y1 - y0).max(8);
     let mut out = nds::image::Rgba::new(side, side);
     let (dx, dy) = ((side - (x1 - x0)) / 2, (side - (y1 - y0)) / 2);
@@ -666,6 +726,44 @@ fn square_crop(img: &nds::image::Rgba) -> nds::image::Rgba {
         for x in x0..x1 {
             let s = (y * w + x) * 4;
             let d = ((y - y0 + dy) * side + (x - x0 + dx)) * 4;
+            out.pixels[d..d + 4].copy_from_slice(&img.pixels[s..s + 4]);
+        }
+    }
+    out
+}
+
+/// The box around a picture's opaque pixels (x0, y0, x1, y1, ends
+/// exclusive); None when it has none.
+fn opaque_box(img: &nds::image::Rgba) -> Option<(usize, usize, usize, usize)> {
+    let (w, h) = (img.width, img.height);
+    let (mut x0, mut y0, mut x1, mut y1) = (w, h, 0, 0);
+    for y in 0..h {
+        for x in 0..w {
+            if img.pixels[(y * w + x) * 4 + 3] > 0 {
+                x0 = x0.min(x);
+                y0 = y0.min(y);
+                x1 = x1.max(x + 1);
+                y1 = y1.max(y + 1);
+            }
+        }
+    }
+    (x1 > x0).then_some((x0, y0, x1, y1))
+}
+
+/// The picture moved to the middle of its own canvas, the size kept: the
+/// bag icons are drawn off centre in their 32x32 cells, and cropping them
+/// instead would show small items as large as big ones.
+fn centre(img: &nds::image::Rgba) -> nds::image::Rgba {
+    let (w, h) = (img.width, img.height);
+    let Some((x0, y0, x1, y1)) = opaque_box(img) else {
+        return img.clone();
+    };
+    let (dx, dy) = ((w - (x1 - x0)) / 2, (h - (y1 - y0)) / 2);
+    let mut out = nds::image::Rgba::new(w, h);
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let s = (y * w + x) * 4;
+            let d = ((y - y0 + dy) * w + (x - x0 + dx)) * 4;
             out.pixels[d..d + 4].copy_from_slice(&img.pixels[s..s + 4]);
         }
     }
@@ -896,6 +994,7 @@ pub fn run() {
             saves,
             set_current_save,
             species_art,
+            item_art,
             badge_art,
             player_art,
             get_auto_update,
@@ -917,6 +1016,8 @@ pub fn run() {
             mods_remove,
             mods_inspect,
             mods_add,
+            catalog_list,
+            catalog_install,
             open_folder,
             get_settings,
             save_settings,
@@ -945,6 +1046,43 @@ mod tests {
         assert_eq!(out.pixels[(2 * 10) * 4 + 3], 0);
         let empty = nds::image::Rgba::new(96, 96);
         assert_eq!(square_crop(&empty).width, 96);
+    }
+
+    #[test]
+    fn centre_keeps_the_size_and_centres() {
+        let mut img = nds::image::Rgba::new(32, 32);
+        // a 4x2 block in the top left corner
+        for y in 0..2 {
+            for x in 0..4 {
+                img.pixels[(y * 32 + x) * 4 + 3] = 255;
+            }
+        }
+        let out = centre(&img);
+        assert_eq!((out.width, out.height), (32, 32));
+        assert_eq!(out.pixels[(15 * 32 + 14) * 4 + 3], 255);
+        assert_eq!(out.pixels[(16 * 32 + 17) * 4 + 3], 255);
+        assert_eq!(out.pixels[(14 * 32 + 14) * 4 + 3], 0);
+        assert_eq!(out.pixels[3], 0);
+    }
+
+    /// Writes the official mods' item icons as item_art draws them, for the
+    /// browser preview: NDS_ROM a Black or White ROM, EIDOS_MOCK_OUT the
+    /// output folder (public/mock).
+    #[test]
+    fn preview_items() {
+        let (Some(rom), Some(out)) = (std::env::var_os("NDS_ROM"), std::env::var_os("EIDOS_MOCK_OUT"))
+        else {
+            return;
+        };
+        let rom = nds::rom::Rom::open(Path::new(&rom)).unwrap();
+        for item in [4u16, 216, 267, 280] {
+            let img = nds::item::item_icon(&rom, item).unwrap();
+            std::fs::write(
+                PathBuf::from(&out).join(format!("item_{item}.png")),
+                nds::image::encode_png(&centre(&img)),
+            )
+            .unwrap();
+        }
     }
 
     /// Writes what the Home page shows for a real saves folder, for the

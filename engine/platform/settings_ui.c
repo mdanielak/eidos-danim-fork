@@ -12,6 +12,7 @@
 #include "mod_net.h"
 #include "mod_title.h"
 #include "mp.h"
+#include "ui_lang.h"            /* labels joined with a value are translated in parts */
 
 /*
  * The port's own network settings (engine/platform/settings.c): the
@@ -128,6 +129,10 @@ static const char *const k_option_help[EIDOS_OPT_COUNT][2] = {
                                         "never goes black." },
     [EIDOS_OPT_GPU_2D]              = { "The graphics card draws the",
                                         "screens. Off uses the CPU." },
+    [EIDOS_OPT_RENDERER]            = { "Native: Direct3D, Metal or",
+                                        "Vulkan. Applies at restart." },
+    [EIDOS_OPT_VSYNC]               = { "Every frame shown evenly.",
+                                        "Off: the DS's own speed." },
     [EIDOS_OPT_PIXEL_FILTER]        = { "Smooths battle sprites.",
                                         "Strong rounds pixel-art corners." },
 };
@@ -246,6 +251,8 @@ static const char *const k_option_labels[EIDOS_OPT_COUNT] = {
     [EIDOS_OPT_OUTLINES]            = "3D outlines",
     [EIDOS_OPT_TRANSITIONS]         = "Map transitions",
     [EIDOS_OPT_GPU_2D]              = "GPU drawing",
+    [EIDOS_OPT_RENDERER]            = "Renderer",
+    [EIDOS_OPT_VSYNC]               = "VSync",
     [EIDOS_OPT_FF_SPEED]            = "Fast forward speed",
     [EIDOS_OPT_FF_MODE]             = "Fast forward mode",
     [EIDOS_OPT_PIXEL_FILTER]        = "Pixel art filter",
@@ -255,6 +262,12 @@ static const char *const k_option_labels[EIDOS_OPT_COUNT] = {
  * {option id, choice index, text}. */
 typedef struct ValueName { int id; int index; const char *text; } ValueName;
 static const ValueName k_value_names[] = {
+    { EIDOS_OPT_RENDERER,            0, "OpenGL" },
+    { EIDOS_OPT_RENDERER,            1, "Native" },
+    { EIDOS_OPT_VSYNC,               0, "Off" },
+    { EIDOS_OPT_VSYNC,               1, "On" },
+    { EIDOS_OPT_GPU_2D,              0, "Off" },
+    { EIDOS_OPT_GPU_2D,              1, "On" },
     { EIDOS_OPT_PIXEL_FILTER,       0, "None" },
     { EIDOS_OPT_PIXEL_FILTER,       1, "Light" },
     { EIDOS_OPT_PIXEL_FILTER,       2, "Strong" },
@@ -316,7 +329,6 @@ static const ValueName k_choice_names[] = {
 #define STR_MOD_REVERT  "Revert changes"
 #define STR_MOD_RELOAD  "Reload mods"
 #define STR_MOD_FOLDER  "Mods folder"
-#define STR_MOD_MISSING " (missing)"
 #define STR_ORPHAN      "orphan"
 #define STR_NET_RELAY   "Relay address"
 #define STR_NET_RPORT   "Relay port"
@@ -747,6 +759,8 @@ static void build_rows(void)
         add_row(ROW_OPTION, EIDOS_OPT_DISPLAY_RESOLUTION, 0);
         add_row(ROW_OPTION, EIDOS_OPT_OUTLINES, 0);
         add_row(ROW_OPTION, EIDOS_OPT_GPU_2D, 0);
+        add_row(ROW_OPTION, EIDOS_OPT_RENDERER, 0);
+        add_row(ROW_OPTION, EIDOS_OPT_VSYNC, 0);
         add_row(ROW_OPTION, EIDOS_OPT_PIXEL_FILTER, 0);
         break;
     case 1:
@@ -2391,8 +2405,8 @@ void eidos_sui_row_text(int row, char *label, int nl, char *value, int nv)
         if (bw_mod_menu_present_at((u32)r->arg)) {
             put(label, nl, bw_mod_menu_name_at((u32)r->arg));
         } else {
-            snprintf(buf, sizeof buf, "%s%s", bw_mod_menu_name_at((u32)r->arg),
-                     STR_MOD_MISSING);
+            snprintf(buf, sizeof buf, ui_trf("%s (missing)"),
+                     bw_mod_menu_name_at((u32)r->arg));
             put(label, nl, buf);
         }
         put(value, nv, bw_mod_menu_enabled_at((u32)r->arg) ? STR_ON : STR_OFF);
@@ -2495,7 +2509,7 @@ void eidos_sui_row_text(int row, char *label, int nl, char *value, int nv)
         put(label, nl, STR_SESSION_CODE);
         if (g_copied) {
             snprintf(buf, sizeof buf, "%s  %s", net_text(eidos_settings_session_code()),
-                     STR_COPIED);
+                     ui_tr(STR_COPIED));
             put(value, nv, buf);
         } else {
             put(value, nv, net_text(eidos_settings_session_code()));
@@ -2561,9 +2575,9 @@ void eidos_sui_row_text(int row, char *label, int nl, char *value, int nv)
         (void)bw_mp_player_at((u32)r->arg2, &p);
         put(label, nl, p.name[0] != '\0' ? p.name : STR_SESSION_PEER);
         snprintf(buf, sizeof buf, "#%u %s%s", (unsigned int)p.peer,
-                 !p.connected ? STR_MP_MISSING :
-                 p.game == 'W' ? "White" : p.game == 'B' ? "Black" : "...",
-                 p.connected && p.game != 0 && !p.mods_ok ? STR_MP_MODS : "");
+                 !p.connected ? ui_tr(STR_MP_MISSING) :
+                 p.game == 'W' ? ui_tr("White") : p.game == 'B' ? ui_tr("Black") : "...",
+                 p.connected && p.game != 0 && !p.mods_ok ? ui_tr(STR_MP_MODS) : "");
         put(value, nv, buf);
         break;
     }

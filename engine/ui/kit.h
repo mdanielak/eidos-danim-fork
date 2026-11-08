@@ -113,6 +113,9 @@ void ui_fill(EidosUiCtx *c, int x, int y, int w, int h, u32 rgb, int a);
 void ui_line(EidosUiCtx *c, int x0, int y0, int x1, int y1, u32 rgb, int a);
 /* fill and outline may be UI_NONE; the ellipse fills the box (x, y, w, h). */
 void ui_ellipse(EidosUiCtx *c, int x, int y, int w, int h, u32 fill, u32 outline, int a);
+/* One pixel, blended and clipped as every shape is (for shapes the kit has
+ * no call for: engine/ui/item_show.c's rays and stars). */
+void ui_pixel(EidosUiCtx *c, int x, int y, u32 rgb, int a);
 
 /* ------------------------------------------------------------------ */
 /* Text: the game's font                                               */
@@ -239,8 +242,10 @@ void ui_cursor_corners(EidosUiCtx *c, int x, int y, int w, int h, u32 color);
 #define UI_TYPE_UNKNOWN 17
 const char *ui_type_name(int type);
 /* The spelling later games give a move whose Black and White name was
- * squeezed into 12 letters ("Dragon Breath"), or NULL. */
-const char *ui_move_name_modern(int id);
+ * squeezed into 12 letters ("Dragon Breath"), or NULL: only when
+ * game_name, the name the game has, is that English word (another
+ * language's name, or a translation mod's, is kept). */
+const char *ui_move_name_modern(int id, const char *game_name);
 u32  ui_type_color(int type);
 /* recipe_dex.c: a species' name from the game's text (> 0 when found) and
  * its two types (the same number twice for one type). */
@@ -286,6 +291,8 @@ void ui_party_row(EidosUiCtx *c, int x, int y, int w, int slot, const char *name
  * experience line). */
 void ui_plate(EidosUiCtx *c, int x, int y, int w, const char *name, int gender,
               int level, int hp, int maxhp, int exp_num, int exp_den);
+/* The plate's condition badge (ui_status_badge's numbering, -1 none). */
+void ui_plate_status(EidosUiCtx *c, int x, int y, int w, int level, int badge);
 void ui_cmd_button(EidosUiCtx *c, int x, int y, int w, int h, const char *label,
                    u32 color, int selected);
 /* name NULL: an empty slot. */

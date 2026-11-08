@@ -1561,7 +1561,7 @@ static void pc_pick(const PcGame *g, int slot, u32 frame)
         const char *why = item_rule(&m);
 
         if (why == NULL && m.item <= 0) {
-            snprintf(line, sizeof(line), "%s holds no item.", m.nick);
+            snprintf(line, sizeof(line), ui_trf("%s holds no item."), m.nick);
             why = line;
         }
         if (why != NULL) {
@@ -1575,8 +1575,8 @@ static void pc_pick(const PcGame *g, int slot, u32 frame)
     g_hand_mon = m;
     g_probe_have = 0;
     g_probe_asked[0] = -1;
-    snprintf(line, sizeof(line), "Carrying %s.",
-             g->mode == PC_MODE_ITEMS ? pc_text(TXT_ITEM, (u32)m.item) : m.egg ? "Egg" : m.nick);
+    snprintf(line, sizeof(line), ui_trf("Carrying %s."),
+             g->mode == PC_MODE_ITEMS ? pc_text(TXT_ITEM, (u32)m.item) : m.egg ? ui_tr("Egg") : m.nick);
     pc_say(line, 0, frame);
 }
 
@@ -1654,7 +1654,7 @@ static void pc_poll_op(const PcGame *g, u32 frame)
         g_apply = 0;
         if (g_op.ok) {
             eidos_ui_sound(SE_PUT);
-            snprintf(line, sizeof(line), "%s now holds %s.", g_item_to,
+            snprintf(line, sizeof(line), ui_trf("%s now holds %s."), g_item_to,
                      pc_text(TXT_ITEM, (u32)g_hand_mon.item));
             pc_say(line, 0, frame);
             g_hand = -1;
@@ -1667,10 +1667,10 @@ static void pc_poll_op(const PcGame *g, u32 frame)
             eidos_ui_sound(SE_PUT);
             char line[96];
 
-            snprintf(line, sizeof(line), "%s is stored.", g_hand_mon.egg ? "Egg" : g_hand_mon.nick);
+            snprintf(line, sizeof(line), ui_trf("%s is stored."), g_hand_mon.egg ? ui_tr("Egg") : g_hand_mon.nick);
             if (g_op.tobox < 0 && g_op.b >= SLOT_PARTY0) {
-                snprintf(line, sizeof(line), "%s joins the party.",
-                         g_hand_mon.egg ? "Egg" : g_hand_mon.nick);
+                snprintf(line, sizeof(line), ui_trf("%s joins the party."),
+                         g_hand_mon.egg ? ui_tr("Egg") : g_hand_mon.nick);
             }
             pc_say(line, 0, frame);
             g_hand = -1;
@@ -2029,8 +2029,20 @@ static const char *const k_menu_label[5] = { "SUMMARY", "HELD ITEMS", "MARKING",
 static void pc_hints(EidosUiCtx *c, int y, int w, const char *const *pairs, const u32 *keys, int n,
                      const PcMouse *m)
 {
-    int i, x = 6;
+    int i, x = 6, gap = 10, total = 0;
 
+    /* a narrow canvas (a tablet's 4:3 screen) closes the gaps between the
+     * pairs, down to 3 pixels, and leaves out a pair that still does not
+     * fit, rather than running off the window's edge */
+    for (i = 0; i < n; i++) {
+        int kw = ui_keycap_w(pairs[2 * i]);
+
+        total += (kw < 13 ? 13 : kw) + 4 + ui_text_w(pairs[2 * i + 1], UI_FONT_SMALL) + gap;
+    }
+    if (n > 1 && x + total - gap > w) {
+        gap -= (x + total - gap - w + n - 2) / (n - 1);
+        gap = gap < 3 ? 3 : gap;
+    }
     ui_fill(c, 0, y, w, 17, UI_BODY2, 235);
     ui_fill(c, 0, y, w, 1, UI_EDGE, 255);
     for (i = 0; i < n; i++) {
@@ -2039,6 +2051,9 @@ static void pc_hints(EidosUiCtx *c, int y, int w, const char *const *pairs, cons
 
         if (kw < 13) {
             kw = 13;
+        }
+        if (x + kw + 4 + aw > w - 2) {
+            break;
         }
         rw = kw + 4 + aw + 4;
         if (m->x >= 0 && in_rect(m->x, m->y, x - 2, y, rw, 17)) {
@@ -2050,7 +2065,7 @@ static void pc_hints(EidosUiCtx *c, int y, int w, const char *const *pairs, cons
         ui_keycap(c, x, y + 2, key);
         x += kw + 4;
         x = ui_text(c, x, y + 2 + ui_text_y(13, UI_FONT_SMALL), what, UI_LIGHT, UI_EDGE,
-                    UI_FONT_SMALL, 1) + 10;
+                    UI_FONT_SMALL, 1) + gap;
     }
 }
 
@@ -2086,14 +2101,14 @@ static void box_title(const PcGame *g, int box, char *out, int cap)
 static const char *carry_line(const PcGame *g, int target, char *buf, int cap, int *bad)
 {
     PcMon t;
-    const char *me = g_hand_mon.egg ? "Egg" : g_hand_mon.nick;
+    const char *me = g_hand_mon.egg ? ui_tr("Egg") : g_hand_mon.nick;
 
     *bad = 0;
     if (g->mode == PC_MODE_ITEMS) {
         const char *it = pc_text(TXT_ITEM, (u32)g_hand_mon.item), *why;
 
         if (target < 0 || (target == g_hand && g->cur_box == g_hand_box) || !pc_mon(g, target, 0, &t)) {
-            snprintf(buf, (size_t)cap, "Carrying %s.", it);
+            snprintf(buf, (size_t)cap, ui_trf("Carrying %s."), it);
             return buf;
         }
         why = item_rule(&t);
@@ -2102,10 +2117,10 @@ static const char *carry_line(const PcGame *g, int target, char *buf, int cap, i
             return why;
         }
         if (t.item > 0) {
-            snprintf(buf, (size_t)cap, "%s will swap with %s's %s.", it, t.nick,
+            snprintf(buf, (size_t)cap, ui_trf("%s will swap with %s's %s."), it, t.nick,
                      pc_text(TXT_ITEM, (u32)t.item));
         } else {
-            snprintf(buf, (size_t)cap, "%s will hold %s.", t.nick, it);
+            snprintf(buf, (size_t)cap, ui_trf("%s will hold %s."), t.nick, it);
         }
         return buf;
     }
@@ -2116,14 +2131,14 @@ static const char *carry_line(const PcGame *g, int target, char *buf, int cap, i
     }
     if (target >= 0 && pc_mon(g, target, 0, &t) && t.exists &&
         !(target == g_hand && g->cur_box == g_hand_box)) {
-        snprintf(buf, (size_t)cap, "%s will swap with %s.", me, t.egg ? "Egg" : t.nick);
+        snprintf(buf, (size_t)cap, ui_trf("%s will swap with %s."), me, t.egg ? ui_tr("Egg") : t.nick);
         return buf;
     }
     if (target >= 0 && !(target == g_hand && g->cur_box == g_hand_box)) {
-        snprintf(buf, (size_t)cap, "%s goes there.", me);
+        snprintf(buf, (size_t)cap, ui_trf("%s goes there."), me);
         return buf;
     }
-    snprintf(buf, (size_t)cap, "Carrying %s.", me);
+    snprintf(buf, (size_t)cap, ui_trf("Carrying %s."), me);
     return buf;
 }
 

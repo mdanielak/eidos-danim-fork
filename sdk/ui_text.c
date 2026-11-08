@@ -150,6 +150,47 @@ u32 bw_ui_item_last(u32 *count, u32 *serial)
 }
 
 /* ------------------------------------------------------------------ */
+/* The key item a cut-in shows (stubs/ov/patch_ov021_fld_wipe_3dobj.c)  */
+/* ------------------------------------------------------------------ */
+
+static volatile u32 g_cutin_item, g_cutin_serial;
+
+void bw_ui_cutin_item(u32 item)
+{
+    g_cutin_item = item;
+    g_cutin_serial++;
+}
+
+/* The key item the last cut-in showed and a number that changes with every
+ * new one (0 when none yet). */
+u32 bw_ui_cutin_last(u32 *serial)
+{
+    if (serial != NULL) *serial = g_cutin_serial;
+    return g_cutin_item;
+}
+
+/* ------------------------------------------------------------------ */
+/* The battle gauges' status icons (stubs/ov/patch_ov094_btlv_gauge.c)  */
+/* ------------------------------------------------------------------ */
+
+static volatile int g_gauge_status[8];
+
+void bw_ui_gauge_status(int slot, int status)
+{
+    if (slot >= 0 && slot < 8) {
+        g_gauge_status[slot] = status;
+    }
+}
+
+/* The condition gauge `slot` (0..7, the battle's view positions 2..9)
+ * shows: 0 none, 1 paralysis, 2 sleep, 3 freeze, 4 burn, 5 poison, 6 bad
+ * poison. */
+int bw_ui_gauge_status_of(int slot)
+{
+    return slot >= 0 && slot < 8 ? g_gauge_status[slot] : 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* The field's open list (stubs/ov/patch_ov021_field_msgbg.c)          */
 /* ------------------------------------------------------------------ */
 

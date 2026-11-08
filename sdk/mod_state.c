@@ -86,6 +86,8 @@
 #include "mod_api.h"
 #include "mod_state.h"
 #include "bw_limits.h"
+#include "mod_context.h"
+#include "overlay.h"
 
 #include <string.h>
 
@@ -239,6 +241,45 @@ extern u16 BTL_POKEPARAM_GetItem(struct BtlPokeParam *pp)
     __attribute__((weak));                                    /* 0x021D5B40 */
 extern struct PokemonParam *BTL_POKEPARAM_GetMon(struct BtlPokeParam *pp)
     __attribute__((weak));
+extern int ov093_BTL_POKEPARAM_GetMajorStatusIndex(struct BtlPokeParam *bpp)
+    __attribute__((weak));
+extern u16 ov093_BTL_POKEPARAM_GetMoveId(struct BtlPokeParam *pp, int slot)
+    __attribute__((weak));
+extern u8 ov093_BTL_POKEPARAM_GetMovePPChecked(struct BtlPokeParam *pp, u32 slot)
+    __attribute__((weak));
+extern u8 ov093_BTL_POKEPARAM_GetMoveCount(struct BtlPokeParam *pp)
+    __attribute__((weak));
+/* The move data's stat changes: src/game/arm9/waza_tool.c. */
+extern u8 WAZA_TOOL_GetRankEffectCount(u16 move) __attribute__((weak));
+extern u8 WAZA_TOOL_GetRankEffect(u16 move, u32 index, s32 *value)
+    __attribute__((weak));
+/* The whiteout after a lost battle (src/game/ov010/scrcmd_network.c) and
+ * the game system's running event (src/game/arm9). */
+struct GameSystem;
+struct GameEvent;
+extern struct GameEvent *ov010_SCRCMD_NETWORK_CreateWhiteOutEvent(struct GameSystem *gameSystem)
+    __attribute__((weak));
+/* The whiteouts the run has seen (sdk/mod_event_battle.c). */
+extern u32 bw_debug_whiteouts;
+extern void GAMESYSTEM_SetEvent(struct GameSystem *gameSystem, struct GameEvent *event)
+    __attribute__((weak));
+struct FieldMap;
+typedef int (*BwGameEventFunc)(struct GameEvent *event, int *seq, void *work);
+extern struct GameEvent *GAME_EVENT_Create(struct GameSystem *gameSystem, struct GameEvent *parent,
+                                           BwGameEventFunc func, u32 workSize) __attribute__((weak));
+extern void GAME_EVENT_CallEvent(struct GameEvent *parent, struct GameEvent *child) __attribute__((weak));
+extern void GAME_EVENT_ChangeEvent(struct GameEvent *now, struct GameEvent *next) __attribute__((weak));
+extern struct GameSystem *GAME_EVENT_GetGameSystem(struct GameEvent *event) __attribute__((weak));
+extern struct FieldMap *GAMESYSTEM_GetFieldMap(struct GameSystem *gameSystem) __attribute__((weak));
+extern struct GameEvent *FIELD_STATUS_CreateFieldCloseEvent(struct GameSystem *gameSystem,
+                                                            struct FieldMap *fieldMap) __attribute__((weak));
+extern struct GameEvent *GAMESYSTEM_GetEvent(const struct GameSystem *gameSystem)
+    __attribute__((weak));
+extern void *bw_dsref__GameSystemGlobal __attribute__((weak));
+extern void *GAMESYSTEM_GetGameData(struct GameSystem *gameSystem) __attribute__((weak));
+extern void bw_mod_export_set_game_data(void *game_data) __attribute__((weak));
+extern void *ov021_FIELDMAP_GetFieldPlayer(void *fieldMap) __attribute__((weak));
+extern struct GameEvent *FIELD_SOUND_SYSTEM_StartFadeOutAndResetTask(struct GameSystem *gameSystem, u16 fadeOutFrames) __attribute__((weak));
 /* POKE_TOOL_PARAM_IS_EGG (src/game/arm9/poke_tool_param.h). */
 #define BW_PARAM_IS_EGG 0x4Cu
 extern u16 BTL_POKEPARAM_GetSpecies(struct BtlPokeParam *pp)
@@ -250,6 +291,9 @@ extern void BTL_POKEPARAM_GetTypes(struct BtlPokeParam *pp, u8 *type1,
 /* The battle's sides: src/game/ov093/btl_main.c. */
 extern u8 *BTL_SIDE_GetPokeAtPos(struct BtlMain *const *side, u8 position)
     __attribute__((weak));                                    /* 0x021B98AC */
+struct BtlSide;
+extern void *ov093_BTL_SIDE_GetClientPokeParam(struct BtlSide *side, unsigned int clientId,
+                                         unsigned int nth) __attribute__((weak));
 
 /* The dex: src/game/arm9/zukan_save.c. */
 extern struct ZukanSave *ZUKAN_SAVE_GetFromGameData(void *gameData)
@@ -433,6 +477,10 @@ void bw_mod_state_set_field_player(void *field_player)
     g_field_player = field_player;
 }
 
+/* A whiteout waiting for a quiet field frame (state_whiteout). */
+static int g_whiteout_pending;
+static int g_whiteout_wait;
+
 /* Forget every binding and every queued move: at power-on and at every
  * reset (bw_port_reset). */
 void bw_mod_state_reset(void)
@@ -441,6 +489,8 @@ void bw_mod_state_reset(void)
     g_battle_main = NULL;
     g_battle_wild = -1;
     g_field_player = NULL;
+    g_whiteout_pending = 0;
+    g_whiteout_wait = 0;
     bw_mod_state_drop_moves();
 }
 
@@ -558,22 +608,50 @@ static void *live_battle_side(u32 side)
            side * BW_BTL_SIDE_STRIDE;
 }
 
-/* The battle record of one slot of one side, or NULL. */
-static struct BtlPokeParam *live_battle_record(u32 side, u32 slot)
+/*
+ * The battle record of one member of one side's party, or NULL.
+ *
+ * Each of the main object's two BtlSide blocks holds every client's party
+ * (slots[clientId]); in a single or double battle the player is client 0
+ * and the opponent client 1, so the side is the client.  The slot is the
+ * member's place in that party (BTL_SIDE_GetClientPokeParam's nth), the
+ * same place the battle events name (BTL_MAIN_GetTrainerSlotOfPoke).
+ *
+ * BTL_SIDE_GetPokeAtPos, used here before, takes a battle position
+ * instead (0 the player's front, 1 the opponent's front in a single
+ * battle) and ignores the block's side, so every side read the field's
+ * front Pokemon and no read reached the bench.
+ */
+static struct BtlPokeParam *battle_record_in(u32 copy, u32 side, u32 slot)
 {
     void *side_block;
-    u8 *record;
 
-    if (BTL_SIDE_GetPokeAtPos == NULL || slot > 5u) {
+    if (ov093_BTL_SIDE_GetClientPokeParam == NULL || slot > 5u || side > 1u) {
         return NULL;
     }
-    side_block = live_battle_side(side);
+    side_block = live_battle_side(copy);
     if (side_block == NULL) {
         return NULL;
     }
-    record = BTL_SIDE_GetPokeAtPos((struct BtlMain *const *)side_block,
-                                   (u8)slot);
-    return (struct BtlPokeParam *)record;
+    return (struct BtlPokeParam *)ov093_BTL_SIDE_GetClientPokeParam(
+        (struct BtlSide *)side_block, side, slot);
+}
+
+/*
+ * The two blocks are two copies of the same Pokemon (src/game/ov093/
+ * btl_main.c, the battle's setup): the server works on sides[1], and the
+ * clients (the player's screen and the AI) on sides[0], which the server's
+ * messages keep in step.  A read takes the server's copy, which is current
+ * even inside the server's own steps (where the battle events fire); a
+ * write goes to both, so the server acts on it (a Pokemon at 0 HP counts
+ * as fainted for the battle's end) and the screen shows it.
+ */
+#define BW_BTL_SERVER_COPY 1u
+#define BW_BTL_CLIENT_COPY 0u
+
+static struct BtlPokeParam *live_battle_record(u32 side, u32 slot)
+{
+    return battle_record_in(BW_BTL_SERVER_COPY, side, slot);
 }
 
 /*
@@ -787,6 +865,59 @@ static int state_battle_get(BwMonRef mon, u32 field, u32 *out)
         *out = (field == BW_MON_FIELD_TYPE1) ? (u32)type1 : (u32)type2;
         return 0;
     }
+    case BW_MON_FIELD_STAGE_ATK:
+    case BW_MON_FIELD_STAGE_DEF:
+    case BW_MON_FIELD_STAGE_SPATK:
+    case BW_MON_FIELD_STAGE_SPDEF:
+    case BW_MON_FIELD_STAGE_SPEED:
+    case BW_MON_FIELD_STAGE_ACCURACY:
+    case BW_MON_FIELD_STAGE_EVASION:
+        /* the game's value ids 1 to 7 are the stages, 6 unchanged */
+        if (BTL_POKEPARAM_GetValue == NULL) {
+            return -1;
+        }
+        *out = (u32)(u8)BTL_POKEPARAM_GetValue(record,
+                                               (int)(field - BW_MON_FIELD_STAGE_ATK + 1u));
+        return 0;
+    case BW_MON_FIELD_STATUS:
+        if (ov093_BTL_POKEPARAM_GetMajorStatusIndex == NULL) {
+            return -1;
+        }
+        *out = (u32)ov093_BTL_POKEPARAM_GetMajorStatusIndex(record);
+        return 0;
+    case BW_MON_FIELD_BATTLE_ABILITY:
+        if (BTL_POKEPARAM_GetValue == NULL) {
+            return -1;
+        }
+        *out = (u32)BTL_POKEPARAM_GetValue(record, 16);
+        return 0;
+    case BW_MON_FIELD_MOVE1:
+    case BW_MON_FIELD_MOVE2:
+    case BW_MON_FIELD_MOVE3:
+    case BW_MON_FIELD_MOVE4: {
+        /* the battle's own moves: a slot past its count holds none */
+        u32 slot = field - BW_MON_FIELD_MOVE1;
+
+        if (ov093_BTL_POKEPARAM_GetMoveId == NULL || ov093_BTL_POKEPARAM_GetMoveCount == NULL) {
+            return -1;
+        }
+        *out = slot < ov093_BTL_POKEPARAM_GetMoveCount(record)
+             ? (u32)ov093_BTL_POKEPARAM_GetMoveId(record, (int)slot) : 0u;
+        return 0;
+    }
+    case BW_MON_FIELD_PP1:
+    case BW_MON_FIELD_PP2:
+    case BW_MON_FIELD_PP3:
+    case BW_MON_FIELD_PP4: {
+        u32 slot = field - BW_MON_FIELD_PP1;
+
+        if (ov093_BTL_POKEPARAM_GetMovePPChecked == NULL || ov093_BTL_POKEPARAM_GetMoveCount == NULL) {
+            return -1;
+        }
+        *out = slot < ov093_BTL_POKEPARAM_GetMoveCount(record)
+             ? (u32)ov093_BTL_POKEPARAM_GetMovePPChecked(record, slot) : 0u;
+        return 0;
+    }
     default:
         break;
     }
@@ -814,15 +945,42 @@ static int state_battle_get(BwMonRef mon, u32 field, u32 *out)
     return 0;
 }
 
+static int set_battle_record(struct BtlPokeParam *record, u32 field, u32 value);
+
 static int state_battle_set(BwMonRef mon, u32 field, u32 value)
 {
-    struct BtlPokeParam *record;
-    int id;
+    struct BtlPokeParam *server = battle_record_in(BW_BTL_SERVER_COPY, mon.side, mon.slot);
+    struct BtlPokeParam *client = NULL;
+    int rc;
+    u32 i;
 
-    record = live_battle_record(mon.side, mon.slot);
-    if (record == NULL) {
+    if (server == NULL) {
         return -1;
     }
+    /* the client's copy of the same Pokemon: both copies were built from
+     * the same party record (BTL_POKEPARAM_GetMon), and the two orders can
+     * differ for a moment after a switch */
+    if (BTL_POKEPARAM_GetMon != NULL) {
+        for (i = 0; i < 6u; i++) {
+            struct BtlPokeParam *c = battle_record_in(BW_BTL_CLIENT_COPY, mon.side, i);
+
+            if (c != NULL && c != server && BTL_POKEPARAM_GetMon(c) == BTL_POKEPARAM_GetMon(server)) {
+                client = c;
+                break;
+            }
+        }
+    }
+    rc = set_battle_record(server, field, value);
+    if (rc == 0 && client != NULL) {
+        (void)set_battle_record(client, field, value);
+    }
+    return rc;
+}
+
+static int set_battle_record(struct BtlPokeParam *record, u32 field, u32 value)
+{
+    int id;
+
     if (field == BW_MON_FIELD_ITEM) {
         if (BTL_POKEPARAM_SetItem == NULL) {
             return -1;
@@ -1617,6 +1775,121 @@ static s32 state_battle_trainer(u32 n)
     return (s32)g_battle_trainers[n];
 }
 
+/* ------------------------------------------------------------------ */
+/* Version 5: the type chart, the weather, what a species can learn     */
+/* ------------------------------------------------------------------ */
+
+/* The game's type chart (src/game/ov093/btl_calc.c), by its linked name:
+ * an affinity 0 none, 1 a quarter, 2 half, 3 normal, 4 double, 5 four
+ * times; Combine puts two of them together. */
+extern int ov093_BTL_CALC_GetTypeAffinity(int atkType, int defType)
+    __attribute__((weak));                                    /* 0x021D794C */
+extern int ov093_BTL_CALC_CombineTypeAffinity(int a, int b) __attribute__((weak));
+
+#define BW_TYPE_COUNT 17u
+
+static s32 state_type_effect(u32 atk, u32 def1, u32 def2)
+{
+    static const s32 quarters[6] = { 0, 1, 2, 4, 8, 16 };
+    int a;
+
+    /* the chart is the battle overlay's own data: it is there while a
+     * battle runs (ov093 loaded), and nowhere else */
+    if (ov093_BTL_CALC_GetTypeAffinity == NULL || ov093_BTL_CALC_CombineTypeAffinity == NULL ||
+        atk >= BW_TYPE_COUNT || def1 >= BW_TYPE_COUNT || !bw_overlay_is_loaded(93u)) {
+        return -1;
+    }
+    a = ov093_BTL_CALC_GetTypeAffinity((int)atk, (int)def1);
+    if (def2 != def1 && def2 < BW_TYPE_COUNT) {
+        a = ov093_BTL_CALC_CombineTypeAffinity(a, ov093_BTL_CALC_GetTypeAffinity((int)atk, (int)def2));
+    }
+    return (a >= 0 && a <= 5) ? quarters[a] : -1;
+}
+
+static s32 state_battle_weather(void)
+{
+    if (g_battle_wild < 0) {
+        return -1;
+    }
+    return (s32)bw_mod_battle_context.weather;
+}
+
+/* The game's own learning data (src/game/arm9/poke_tool.c, file_util.c,
+ * ov021 sodateya.c): the level-up table, the TM and HM machines and the egg
+ * moves (archive 0x7B: a count, then the moves). */
+extern u32 POKE_TOOL_CheckSpeciesTmCompat(u16 species, u16 form, s32 tmIndex)
+    __attribute__((weak));
+extern u16 FILE_UTIL_GetMachineMove(u16 machineId) __attribute__((weak)); /* 0x020212B0 */
+extern u32 FILE_UTIL_GetId(u32 machineId) __attribute__((weak));
+extern void *ARC_TOOL_LoadMember(u32 archiveID, u32 memberIdx, u16 heapID)
+    __attribute__((weak));
+extern void POKE_PERSONAL_LoadDataDirect(u32 species, int form, void *dst)
+    __attribute__((weak));                                    /* 0x0201ADD0 */
+
+#define BW_SPECIES_MAX      649u
+#define BW_MOVE_MAX         559u
+#define BW_LEARNSET_BYTES   0x68u
+#define BW_EGG_MOVE_ARC     0x7Bu
+
+static s32 state_species_learns(u16 species, u16 form, u16 move, u8 level)
+{
+    s32 how = 0;
+
+    /* the species data opens with the game (as state_species_value) */
+    if (species == 0u || species > BW_SPECIES_MAX || move == 0u || move > BW_MOVE_MAX ||
+        g_game_data == NULL) {
+        return -1;
+    }
+    /* the level-up table: (move, level) pairs ending with 0xFFFF */
+    if (POKE_PERSONAL_LoadDataDirect != NULL) {
+        u16 table[BW_LEARNSET_BYTES / 2u];
+        u32 i;
+
+        memset(table, 0xFF, sizeof(table));
+        POKE_PERSONAL_LoadDataDirect(species, (int)form, table);
+        for (i = 0; i + 1u < BW_LEARNSET_BYTES / 2u && table[i] != 0xFFFFu; i += 2u) {
+            if (table[i] == move && (level == 0u || table[i + 1u] <= level)) {
+                how |= 1;
+                break;
+            }
+        }
+    }
+    /* the machines: TM01 to TM92 and HM01 to HM06 are items 0x148 to
+     * 0x1A9, TM93 to TM95 items 0x26A to 0x26C */
+    if (POKE_TOOL_CheckSpeciesTmCompat != NULL && FILE_UTIL_GetMachineMove != NULL &&
+        FILE_UTIL_GetId != NULL) {
+        u32 item;
+
+        for (item = 0x148u; item <= 0x26Cu; item++) {
+            if (item == 0x1AAu) {
+                item = 0x26Au;
+            }
+            if (FILE_UTIL_GetMachineMove((u16)item) == move &&
+                POKE_TOOL_CheckSpeciesTmCompat(species, form, (s32)FILE_UTIL_GetId(item)) != 0u) {
+                how |= 2;
+                break;
+            }
+        }
+    }
+    /* the egg moves */
+    if (ARC_TOOL_LoadMember != NULL && GFL_HEAP_Free != NULL) {
+        u16 *egg = (u16 *)ARC_TOOL_LoadMember(BW_EGG_MOVE_ARC, species, (u16)BW_STATE_BAG_HEAP);
+
+        if (egg != NULL) {
+            u32 n = egg[0], i;
+
+            for (i = 1; i <= n && i < 64u; i++) {
+                if (egg[i] == move) {
+                    how |= 4;
+                    break;
+                }
+            }
+            GFL_HEAP_Free(egg);
+        }
+    }
+    return how;
+}
+
 static u32 state_play_seconds(void)
 {
     struct PlayTime *t;
@@ -1636,7 +1909,7 @@ static u32 state_play_seconds(void)
 
 static int state_item_value(u16 item, u32 field, u32 *out)
 {
-    if (out == NULL || FILE_UTIL_GetItemParam == NULL ||
+    if (out == NULL || FILE_UTIL_GetItemParam == NULL || g_game_data == NULL ||
         (u32)item > bw_limit_get(BW_PORT_LIMIT_ITEM_LAST)) {
         return -1;
     }
@@ -1646,12 +1919,134 @@ static int state_item_value(u16 item, u32 field, u32 *out)
 
 static int state_move_value(u16 move, u32 field, u32 *out)
 {
-    if (out == NULL || WAZA_TOOL_GetParam == NULL ||
+    /* the move archive opens with the game (as state_species_value): a
+     * read from a mod's start, before that, crashed the game */
+    if (out == NULL || WAZA_TOOL_GetParam == NULL || g_game_data == NULL ||
         (u32)move > bw_limit_get(BW_PORT_LIMIT_MOVE_LAST)) {
         return -1;
     }
+    if (field == BW_MOVE_FIELD_RANK_COUNT) {
+        if (WAZA_TOOL_GetRankEffectCount == NULL) {
+            return -1;
+        }
+        *out = WAZA_TOOL_GetRankEffectCount(move);
+        return 0;
+    }
+    if ((field >= BW_MOVE_FIELD_RANK_TYPE1 && field <= BW_MOVE_FIELD_RANK_TYPE3) ||
+        (field >= BW_MOVE_FIELD_RANK_VALUE1 && field <= BW_MOVE_FIELD_RANK_VALUE3)) {
+        u32 index = (field & 0x0Fu) - 1u;
+        s32 value = 0;
+        u8 type;
+
+        if (WAZA_TOOL_GetRankEffect == NULL) {
+            return -1;
+        }
+        type = WAZA_TOOL_GetRankEffect(move, index, &value);
+        *out = field <= BW_MOVE_FIELD_RANK_TYPE3 ? (u32)type : (u32)value;
+        return 0;
+    }
     *out = WAZA_TOOL_GetParam((u32)move, field);
     return 0;
+}
+
+/*
+ * whiteout: the event the game runs after a lost battle
+ * (SCRCMD_NETWORK_CreateWhiteOutEvent, from EVENT_BATTLE_ProcBattleTask):
+ * the blackout screen, the arrival at the last Pokemon Centre and the
+ * nurse's script.  A mod asks from inside a handler, where the game is in
+ * the middle of its own work, so the event waits for a frame where the
+ * field runs with no event; a few frames of that, so the field is settled.
+ */
+/* The lost battle reaches the whiteout with the field already closed
+ * (EVENT_BATTLE_ProcBattleTask closes it for the battle and does not open
+ * it again), so from the field the event closes it first. */
+static int whiteout_event(struct GameEvent *event, int *seq, void *work)
+{
+    struct GameSystem *gs = GAME_EVENT_GetGameSystem(event);
+
+    (void)work;
+    switch (*seq) {
+    case 0:
+        GAME_EVENT_CallEvent(event, FIELD_STATUS_CreateFieldCloseEvent(gs, GAMESYSTEM_GetFieldMap(gs)));
+        (*seq)++;
+        return 0;
+    case 1:
+        /* the music: the lost battle fades it out and resets it the same
+         * way before the whiteout */
+        GAME_EVENT_CallEvent(event, FIELD_SOUND_SYSTEM_StartFadeOutAndResetTask(gs, 0x1E));
+        (*seq)++;
+        return 0;
+    case 2:
+        /* the game's whiteout by its own name, not the hooked one: this
+         * whiteout is the mod's, not a lost battle, so it raises no
+         * whiteout event; the test switches still count it */
+        bw_debug_whiteouts++;
+        GAME_EVENT_ChangeEvent(event, ov010_SCRCMD_NETWORK_CreateWhiteOutEvent(gs));
+        return 0;
+    default:
+        return 1;
+    }
+}
+
+static int state_whiteout(void)
+{
+    if (g_game_data == NULL || ov010_SCRCMD_NETWORK_CreateWhiteOutEvent == NULL ||
+        GAME_EVENT_Create == NULL || GAME_EVENT_CallEvent == NULL || GAME_EVENT_ChangeEvent == NULL ||
+        GAME_EVENT_GetGameSystem == NULL || GAMESYSTEM_GetFieldMap == NULL ||
+        FIELD_STATUS_CreateFieldCloseEvent == NULL || FIELD_SOUND_SYSTEM_StartFadeOutAndResetTask == NULL ||
+        GAMESYSTEM_SetEvent == NULL || GAMESYSTEM_GetEvent == NULL ||
+        &bw_dsref__GameSystemGlobal == NULL) {
+        return -1;
+    }
+    g_whiteout_pending = 1;
+    g_whiteout_wait = 0;
+    return 0;
+}
+
+void bw_mod_state_frame(void)
+{
+    struct GameSystem *gs;
+    struct GameEvent *ev;
+
+    if (&bw_dsref__GameSystemGlobal == NULL || bw_dsref__GameSystemGlobal == NULL) {
+        return;
+    }
+    gs = *(struct GameSystem **)bw_dsref__GameSystemGlobal;
+    /* The game data: the battle and the mon events bind it, so before the
+     * first of those (a game loaded and walked in) every state call failed.
+     * The game system holds it once the field runs (GAMESYSTEM_GetGameData). */
+    if (g_game_data == NULL && gs != NULL && *(void **)((u8 *)gs + 0x20) != NULL &&
+        GAMESYSTEM_GetGameData != NULL) {
+        g_game_data = GAMESYSTEM_GetGameData(gs);
+        if (g_game_data != NULL && bw_mod_export_set_game_data != NULL) {
+            bw_mod_export_set_game_data(g_game_data);   /* as the events bind it */
+        }
+    }
+    /* The field player: nothing bound it, so player_pos always failed.  It
+     * lives as long as the field map does. */
+    if (gs != NULL && ov021_FIELDMAP_GetFieldPlayer != NULL) {
+        void *fm = *(void **)((u8 *)gs + 0x20);
+
+        g_field_player = fm != NULL ? ov021_FIELDMAP_GetFieldPlayer(fm) : NULL;
+    }
+    if (!g_whiteout_pending) {
+        return;
+    }
+    /* the field map sits at +0x20 of the game system (engine/ui/ui.c's
+     * debug warp reads it the same way) */
+    if (gs == NULL || *(void **)((u8 *)gs + 0x20) == NULL || g_battle_main != NULL ||
+        GAMESYSTEM_GetEvent(gs) != NULL) {
+        g_whiteout_wait = 0;
+        return;
+    }
+    if (++g_whiteout_wait < 10) {
+        return;
+    }
+    g_whiteout_pending = 0;
+    ev = GAME_EVENT_Create(gs, NULL, whiteout_event, 4u);
+    if (ev != NULL) {
+        GAMESYSTEM_SetEvent(gs, ev);
+    }
 }
 
 /*
@@ -1713,7 +2108,12 @@ const BwModState bw_mod_state = {
     state_mon_recalc,
 
     state_species_base,
-    state_battle_trainer
+    state_battle_trainer,
+
+    state_type_effect,
+    state_battle_weather,
+    state_species_learns,
+    state_whiteout
 };
 
 int bw_mod_state_party_slot(const void *mon)

@@ -83,6 +83,8 @@ int host_pick_rom(const char *title, char *out, size_t n);
 #if defined(__APPLE__)
 /* host/ios_view.m: the home indicator hidden, its swipe deferred (iOS). */
 void host_ios_view_setup(void);
+/* host/ios_view.m: whether the device is an iPad (1) or not (0). */
+int host_ios_is_pad(void);
 #endif
 
 /* host/fiber.c, host/wasi.c */
@@ -97,5 +99,11 @@ void host_wasi_init(void);
  * (sdk/wasm_heap.c), for the host's own allocations in module memory. */
 uint32_t host_malloc(uint32_t n);
 void host_free(uint32_t addr);
+
+/* host/sdl.c: SDL's objects as the small numbers the module holds (one
+ * table for SDL and its GPU, host/sdl_gpu.c). */
+uint32_t host_handle_of(void *p);
+void *host_handle_ptr(uint32_t h);
+void host_handle_drop(uint32_t h);
 
 #endif /* EIDOS_HOST_H */
