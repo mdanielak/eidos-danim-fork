@@ -2612,7 +2612,7 @@ static void bag_run(EidosUiCtx *c, EidosUiView *view, const EidosUiFrame *in)
                      sel ? UI_WHITE : UI_RED, 255);
             ui_text(c, ix + 10, last_y + 4,
                     label(MSG_BAG_UI, 8, "LAST USED ITEM", buf, sizeof(buf)), UI_PINK, UI_RED2,
-                    UI_FONT_SMALL, 1);
+                    UI_FONT_LARGE, 1);
             if (icon != NULL) {
                 int room = last_h - 18, tw, total, gx, scale, ty;
                 char q[24];
@@ -2687,7 +2687,8 @@ static void bag_run(EidosUiCtx *c, EidosUiView *view, const EidosUiFrame *in)
 
             ui_panel(c, ix, detail_y, iw, nav_y - detail_y - 3, UI_CUT_TL | UI_CUT_BR, 4, 0x2A0814u, UI_RED, 255);
             if (item != 0 && msg_line(MSG_DESC, (u32)item, desc, sizeof(desc))) {
-                draw_wrapped(c, ix + 6, detail_y + 3, iw - 12, desc, UI_FONT_SMALL, 11, 3, UI_LIGHT,
+                draw_wrapped(c, ix + 6, detail_y + 3, iw - 12, desc, UI_FONT_LARGE, 18,
+                             (nav_y - detail_y - 9) / 18, UI_LIGHT,
                              UI_RED2);
             }
         }

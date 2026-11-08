@@ -59,9 +59,16 @@ typedef struct UiFontData {
     int  ok;
     u8   ugrave[64];        /* the small font's u-grave, made (small_fix)  */
     int  has_ugrave;
+    u8   polish[18][64];    /* missing small-font Polish letters */
+    u32  polish_mask;
 } UiFontData;
 
 static UiFontData g_font[3];
+
+static const u16 k_polish[] = {
+    0x104, 0x105, 0x106, 0x107, 0x118, 0x119, 0x141, 0x142, 0x143,
+    0x144, 0xD3, 0xF3, 0x15A, 0x15B, 0x179, 0x17A, 0x17B, 0x17C
+};
 
 static u32 rd16(const u8 *p) { return (u32)p[0] | ((u32)p[1] << 8); }
 static u32 rd32(const u8 *p) { return rd16(p) | (rd16(p + 2) << 16); }
@@ -206,6 +213,75 @@ static void small_fix(UiFontData *f)
     }
 }
 
+/* Translation patches need not supply the small font used by long UI
+ * descriptions. Build only its missing Polish letters from its own Latin
+ * glyphs, keeping their advance and baseline. Native patched glyphs win.
+ * Two bottom rows hold ogoneks; two top rows hold acute/dot accents. */
+static void small_polish(UiFontData *f)
+{
+    static const char base[] = "AaCcEeLlNnOoSsZzZz";
+    int i;
+
+    f->polish_mask = 0;
+    if (f->cell_w != 10 || f->cell_h != 10 || f->cell_size > 64) return;
+    for (i = 0; i < 18; i++) {
+        u32 g = f->map[(u8)base[i]], old = f->map[k_polish[i]];
+        const u8 *src;
+        u8 *dst = f->polish[i];
+        int ink[10][10] = {{0}}, x, y, left = 10, right = 0, top = 10, bottom = 0;
+        int ogonek = i < 2 || (i >= 4 && i < 6);
+        int slash = i == 6 || i == 7;
+        int dot = i >= 16;
+
+        if ((old != 0xFFFFu && old < f->glyph_count) ||
+            g == 0xFFFFu || g >= f->glyph_count) continue;
+        src = f->data + f->glyph_off + g * (u32)f->cell_size;
+        for (y = 0; y < 10; y++) for (x = 0; x < 10; x++) {
+            int p = y * 10 + x;
+            if (((src[3 + p / 4] >> (6 - (p % 4) * 2)) & 3) == 1) {
+                ink[y][x] = 1;
+                if (x < left) left = x;
+                if (x > right) right = x;
+                if (y < top) top = y;
+                if (y > bottom) bottom = y;
+            }
+        }
+        if (left > right) continue;
+        if (!ogonek && !slash) {
+            /* Capitals reach row zero: compress their body into rows 3..7
+             * before adding the accent. Lowercase already has headroom. */
+            if (top < 3) {
+                int body[10][10];
+                memcpy(body, ink, sizeof body);
+                memset(ink, 0, sizeof ink);
+                for (y = 3; y <= bottom; y++) for (x = 0; x < 10; x++)
+                    ink[y][x] = body[top + (y - 3) * (bottom - top + 1) / (bottom - 2)][x];
+            }
+            x = (left + right) / 2;
+            ink[0][x + (dot ? 0 : 1)] = 1;
+            ink[1][x] = 1;
+        } else if (ogonek) {
+            x = right > 0 ? right - 1 : right;
+            ink[8][x] = 1;
+            ink[9][x] = 1;
+            if (x < 9) ink[9][x + 1] = 1;
+        } else {
+            y = (top + bottom) / 2;
+            for (x = left > 0 ? left - 1 : 0; x <= right + 1 && x < 9; x++)
+                ink[y + (x < (left + right) / 2 ? 1 : 0)][x] = 1;
+        }
+        memcpy(dst, src, 3);
+        memset(dst + 3, 0, (size_t)f->cell_size - 3);
+        /* Rebuild the same one-pixel shadow without painting over ink. */
+        for (y = 0; y < 10; y++) for (x = 0; x < 10; x++) {
+            int p = y * 10 + x;
+            int v = ink[y][x] ? 1 : (x > 0 && y > 0 && ink[y - 1][x - 1] ? 2 : 0);
+            dst[3 + p / 4] |= (u8)(v << (6 - (p % 4) * 2));
+        }
+        f->polish_mask |= 1u << i;
+    }
+}
+
 int ui_font_load_nftr(int font, const u8 *data, u32 size)
 {
     UiFontData *f;
@@ -234,6 +310,7 @@ int ui_font_load_nftr(int font, const u8 *data, u32 size)
     f->ok = 1;
     if (font == 1) {
         small_fix(f);
+        small_polish(f);
     }
     return 0;
 }
@@ -258,6 +335,7 @@ static void font_ensure(int font)
         f->ok = 1;
         if (font == 1) {
             small_fix(f);
+            small_polish(f);
         }
     } else {
         free(m);
@@ -288,6 +366,15 @@ int ui_font_glyph(int font, u32 code, UiGlyph *out)
     rec = f->data + f->glyph_off + g * (u32)f->cell_size;
     if (code == 0xF9u && f->has_ugrave) {
         rec = f->ugrave;
+    }
+    if (font == 1 && f->polish_mask != 0) {
+        int i;
+        for (i = 0; i < 18; i++) {
+            if (code == k_polish[i] && (f->polish_mask & (1u << i))) {
+                rec = f->polish[i];
+                break;
+            }
+        }
     }
     out->bearing = (int)(signed char)rec[0];
     out->adv = rec[2];

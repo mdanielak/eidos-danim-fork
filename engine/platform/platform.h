@@ -119,9 +119,13 @@ typedef struct EidosPadBinding {
  *
  *     A            east               B            south
  *     X            north              Y            west
- *     L, R         the shoulders and the triggers
+ *     L, R         the shoulders (the right trigger doubles R)
  *     START        Start              SELECT       Back
  *     d-pad        the d-pad and the left stick
+ *
+ * The left trigger is not in this table: it is fast forward's own control
+ * (eidos_platform_set_fast_forward_bindings), so it neither presses L nor
+ * anything else while the game runs.
  */
 const EidosPadBinding *eidos_default_padmap(u32 *count);
 
@@ -357,6 +361,12 @@ s16  eidos_audio_gain(s16 v, int percent);
 int  eidos_platform_set_bindings(EidosPlatform *p, const EidosKeyBinding *keys,
                                  u32 nkeys, const EidosPadBinding *pads,
                                  u32 npads);
+/* Fast forward's own controls, apart from the DS buttons: a key (Space by
+ * default) and a pad control (the left trigger).  Either one, held, runs
+ * the game faster; both do the same.  scancode 0 / kind -1 disable that
+ * one.  The settings screen rebinds them ([keys]/[pad], fastforward). */
+void eidos_platform_set_fast_forward_bindings(EidosPlatform *p, int scancode,
+                                              const EidosPadBinding *pad);
 /* Each screen's destination rectangle in the current output (0 top, 1
  * bottom), and the output size. */
 void eidos_platform_viewport(const EidosPlatform *p, EidosViewport *vp);
@@ -587,19 +597,35 @@ u64 eidos_frame_period_ns(void);
  */
 void eidos_platform_wait_frame(EidosPlatform *p);
 
-/* Fast forward: while Tab is held in the game window, the game runs
- * EIDOS_FAST_FORWARD frames in the time of one; while left Shift and Tab
- * are held, it runs as fast as the host can (EIDOS_FAST_FORWARD_MAX, a
- * bound no host reaches).  Right Shift is not used: it is SELECT.  Returns
- * the speed factor: one of the two while the keys are held, 1 otherwise
- * (and with no window).  eidos_platform_wait_frame paces by it. */
-#define EIDOS_FAST_FORWARD     2
-#define EIDOS_FAST_FORWARD_MAX 1000
+/* Fast forward: while Tab, the fast-forward key (Space by default) or the
+ * fast-forward pad control (the left trigger by default) is held in the
+ * game window, the game runs a number of frames in the time of one; with
+ * left Shift held it runs as fast as the host can (EIDOS_FAST_FORWARD_MAX,
+ * a bound no host reaches).  Right Shift is not used for it: it is SELECT.
+ * Both the key and the pad control are the settings screen's own bindings
+ * and both do the same.  In the settings screen's toggle mode a press of
+ * any of them starts fast forward and the next press stops it. Alt+Tab
+ * preserves that toggle; Tab with Alt held is not a fast-forward press.
+ *
+ * Returns the speed in thousandths: EIDOS_FAST_FORWARD_1X (1000) is the
+ * game's own speed, 2000 twice, 2500 two and a half times, and
+ * EIDOS_FAST_FORWARD_MAX while left Shift is held.  1x means off.
+ * eidos_platform_wait_frame paces by it. */
+#define EIDOS_FAST_FORWARD_1X  1000
+#define EIDOS_FAST_FORWARD     2000
+#define EIDOS_FAST_FORWARD_MAX 1000000
 int  eidos_platform_fast_forward(const EidosPlatform *p);
+
+/* The settings screen's speed and mode.  `milli` is the thousandths above
+ * (clamped to 1000..16000); `toggle` non-zero makes a press start and stop
+ * fast forward instead of holding it down. */
+void eidos_platform_set_fast_forward_speed(EidosPlatform *p, int milli);
+void eidos_platform_set_fast_forward_mode(EidosPlatform *p, int toggle);
 
 /* A lock on fast forward: while it is set (a multiplayer session: the
  * other players cannot speed up with this one), eidos_platform_fast_forward
- * answers 1 whatever keys are held.  The caller sets it every frame. */
+ * answers EIDOS_FAST_FORWARD_1X whatever keys are held and a toggle is
+ * cleared.  The caller sets it every frame. */
 void eidos_platform_fast_forward_lock(int locked);
 
 /* Monotonic nanoseconds since the platform was created. */

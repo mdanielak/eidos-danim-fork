@@ -59,6 +59,8 @@
 #include "g3d.h"
 #include "hw3d.h"
 #include "prof.h"
+#include "settings.h"
+#include "pixel_filter.h"
 
 #define FLOATS_PER_VERTEX 9u
 
@@ -96,6 +98,8 @@ static const char *k_fs3 =
     "uniform int u_back;\n"
     "uniform int u_wbuf;\n"
     "uniform int u_pass;\n"
+    "uniform int pixel_filter;\n"
+    PIXEL_FILTER_GLSL
     "int wrapc(int v, int size, int rep, int flip) {\n"
     "    if (size <= 0) { return 0; }\n"
     "    if (rep == 0) { return clamp(v, 0, size - 1); }\n"
@@ -133,6 +137,20 @@ static const char *k_fs3 =
     "        int x = wrapc(int(floor(v_st.x / 16.0)), u_texsize.x, u_wrap.x, u_wrap.z);\n"
     "        int y = wrapc(int(floor(v_st.y / 16.0)), u_texsize.y, u_wrap.y, u_wrap.w);\n"
     "        ivec4 tc = ivec4(texelFetch(u_texture, ivec2(x, y), 0) * 255.0 + 0.5);\n"
+    "        if (pixel_filter != 0 && u_wrap.x == 0 && u_wrap.y == 0) {\n"
+    "            vec2 uv = v_st / 16.0;\n"
+    "            vec4 sampled = pixel_sample(u_texture, uv, u_texsize, pixel_filter);\n"
+    "            if (pixel_filter == 2 && max(fwidth(uv).x, fwidth(uv).y) < 1.0) {\n"
+    "                vec2 dx = dFdx(uv) * 0.25, dy = dFdy(uv) * 0.25;\n"
+    "                vec4 a = pf_premul(pixel_sample(u_texture, uv-dx-dy, u_texsize, 2));\n"
+    "                vec4 b = pf_premul(pixel_sample(u_texture, uv+dx-dy, u_texsize, 2));\n"
+    "                vec4 c = pf_premul(pixel_sample(u_texture, uv-dx+dy, u_texsize, 2));\n"
+    "                vec4 d = pf_premul(pixel_sample(u_texture, uv+dx+dy, u_texsize, 2));\n"
+    "                vec4 avg = (a+b+c+d) * 0.25;\n"
+    "                sampled = avg.a > 0.0 ? vec4(avg.rgb / avg.a, avg.a) : vec4(0.0);\n"
+    "            }\n"
+    "            tc = ivec4(sampled * 255.0 + 0.5);\n"
+    "        }\n"
     "        if (u_mode == 1) {\n"
     "            int ta = tc.a >> 3;\n"
     "            col = (tc.rgb * ta + c * (31 - ta)) / 31;\n"
@@ -1262,6 +1280,7 @@ int eidos_gl3d_init(EidosGl *g)
     LOC(u_tex3, "u_tex");
     LOC(u_texture, "u_texture");
     LOC(u_texsize3, "u_texsize");
+    LOC(u_pixel_filter, "pixel_filter");
     LOC(u_wrap, "u_wrap");
     LOC(u_alpharef, "u_alpharef");
     LOC(u_toon, "u_toon");
@@ -1682,6 +1701,9 @@ static void draw_run(EidosGl *g, const G3dSnapshot *s, const Gl3dRun *d,
     g->glUniform1i(g->u_alpha5, (GLint)d->a5);
     g->glUniform1i(g->u_front, (GLint)d->front);
     g->glUniform1i(g->u_back, (GLint)d->back);
+    g->glUniform1i(g->u_pixel_filter,
+                   d->textured && s->tex[d->slot].sprite
+                       ? eidos_settings_get(EIDOS_OPT_PIXEL_FILTER) : 0);
     if (d->textured) {
         if (*bound_tex != d->slot) {
             glBindTexture(GL_TEXTURE_2D, g->gtex[d->slot]);
@@ -1986,7 +2008,10 @@ static int render_into(EidosGl *g, GlFb *fb, const G3dSnapshot *s, int w, int h)
                 cur.wrap = cur.textured ? (int)(G3D_TEX_REPEAT_S(ti) | (G3D_TEX_REPEAT_T(ti) << 1)
                                                 | (G3D_TEX_FLIP_S(ti) << 2) | (G3D_TEX_FLIP_T(ti) << 3)) : 0;
                 cur.id = (int)G3D_ATTR_ID(attr);
-                cur.two_pass = a5 >= 31u && cur.textured && s->tex[slot].partial;
+                cur.two_pass = a5 >= 31u && cur.textured &&
+                    (s->tex[slot].partial ||
+                     (s->tex[slot].sprite && eidos_settings_get(EIDOS_OPT_PIXEL_FILTER) != 0 &&
+                      (cur.wrap & 3) == 0));
                 cur.fog = G3D_ATTR_FOG(attr) != 0;
                 if (have && run_first + run_verts == first
                     && memcmp(&run, &cur, sizeof(run)) == 0) {

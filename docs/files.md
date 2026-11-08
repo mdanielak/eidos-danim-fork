@@ -269,16 +269,23 @@ small file of OS calls (`install/fsutil.c`, Win32 and POSIX):
   (`data/` NitroFS files, ARM9/ARM7, FNT/FAT, both overlay tables and their
   files, orphans, the banner, the DSi regions) plus what `tools/delink.py`
   derives: `arm9_dec.bin` and `overlays_dec/`, BLZ-decompressed by
-  `install/blz.c` exactly as `tools/blz.py` does. `eidos_manifest.json`
+  `install/blz.c` exactly as `tools/blz.py` does. An ARM9 section padded
+  after the container's footer (JetBlack leaves twelve zero bytes) is
+  decoded from the length the footer closes, not copied as stored.
+  `eidos_manifest.json`
   records which image and which installer version. The output is atomic
   (staged in `<out>.partial`, renamed into place when complete); a finished
   extraction of the same image is reused, an interrupted one restarts, and
   a folder holding anything eidos did not write is refused, never deleted;
 - the ROM is untrusted input: every offset is checked, the whole plan is
-  validated (bounds, overlaps, a cyclic FNT) before a single file is
-  written, names are sanitised exactly as ndsrom.py sanitises them, and
-  paths are UTF-8 on every platform (the wide API on Windows, with the
-  long-path prefix past 200 characters).
+  validated (bounds, a cyclic FNT, FAT entries that run past the image)
+  before a single file is written, names are sanitised exactly as
+  ndsrom.py sanitises them, and paths are UTF-8 on every platform (the
+  wide API on Windows, with the long-path prefix past 200 characters).
+  Overlapping regions are accepted: ROM hacks relocate the FNT, FAT and
+  banner and leave the DSi-only fields inconsistent, each region is
+  written to its own file, and ndsrom.py's overlap check belongs to the
+  residue pass of its ROM rebuild, which eidos does not perform.
 
 `eidos_extract [--any] [--replace] <rom.nds> [out_dir]` is the command-line
 front end. **On the real ROM it writes 726 files, all 726 identical (size

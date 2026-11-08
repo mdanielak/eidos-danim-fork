@@ -268,6 +268,15 @@ const char *bw_os_getenv(const char *name, char *buf, size_t n)
 
 int bw_os_abspath(const char *path, char *out, size_t n)
 {
+#if defined(__wasm__)
+    /* The module's C library calls "/" its working directory, and the host
+     * opens the paths it is handed as the platform's own.  Prefixing that
+     * "/" turns a Windows drive path ("C:\...") into "//C:\...", which
+     * Windows reads as a UNC path on a host named "C:" and cannot open.
+     * The paths that reach here are the picker's and the platform folders',
+     * already absolute, so they need no prefix. */
+    return put(out, n, path);
+#else
     char cwd[4096];
 
     if (path[0] == '/') {
@@ -277,6 +286,7 @@ int bw_os_abspath(const char *path, char *out, size_t n)
         return -1;
     }
     return snprintf(out, n, "%s/%s", cwd, path) < (int)n ? 0 : -1;
+#endif
 }
 
 char **bw_os_utf8_argv(int *argc, char **argv)

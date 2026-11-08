@@ -965,6 +965,23 @@ static int test_data(const char *root)
         BW_REQUIRE("font has a left arrow", ui_font_glyph(i, 0x2190, &g) && g.bitmap != q.bitmap);
     }
     BW_REQUIRE("text has width", ui_text_w("Pok\xC3\xA9mon", UI_FONT_LARGE) > 30);
+    /* A Polish patch may translate only fonts 0 and 2. Long descriptions
+     * use font 1: it must supply the missing letters rather than '?'. */
+    ui_font_glyph(UI_FONT_LARGE, '?', &q);
+    if (ui_font_glyph(UI_FONT_LARGE, 0x105, &g) && g.bitmap != q.bitmap) {
+        static const u16 polish[] = {
+            0x104, 0x105, 0x106, 0x107, 0x118, 0x119, 0x141, 0x142, 0x143,
+            0x144, 0xD3, 0xF3, 0x15A, 0x15B, 0x179, 0x17A, 0x17B, 0x17C
+        };
+        int j;
+        for (i = 0; i < 3; i++) {
+            ui_font_glyph(i, '?', &q);
+            for (j = 0; j < (int)(sizeof polish / sizeof polish[0]); j++) {
+                BW_REQUIRE("Polish glyph survives every font size",
+                    ui_font_glyph(i, polish[j], &g) && g.bitmap != q.bitmap);
+            }
+        }
+    }
     BW_REQUIRE("digits are narrower than M",
                ui_text_w("1", UI_FONT_LARGE) <= ui_text_w("M", UI_FONT_LARGE));
 

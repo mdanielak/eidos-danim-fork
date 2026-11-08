@@ -339,7 +339,7 @@ typedef struct BootRun {
     u32 skipped;       /* presents skipped in a row (badly behind)       */
     u64 ff_shown_ns;   /* fast forward: when a frame was last shown      */
     int ff_skip;       /* fast forward: this frame is neither drawn nor shown */
-    u32 ff_since;      /* fast forward: frames since one was shown        */
+    u32 ff_acc;        /* fast forward: thousandths since a frame was shown */
     u64 audio_rem;     /* the output-frame remainder, in clock units     */
     u8 *top;
     u8 *bottom;
@@ -1930,7 +1930,7 @@ static void boot_frame(void *user)
 {
     BootRun *run = (BootRun *)user;
     int audio_device = 0;
-    int speed = 1;   /* fast forward factor (Tab), eidos_platform_fast_forward */
+    int speed = EIDOS_FAST_FORWARD_1X;   /* thousandths, eidos_platform_fast_forward */
     u64 t_step, t_ph;
 
     /*
@@ -2103,15 +2103,16 @@ static void boot_frame(void *user)
         g3d_hw_trace(eidos_frame_count(&run->loop) + 1u == g_trace_frame);
     }
 #if EIDOS_BOOT_SDL
-    /* Fast forward (Tab): one frame in `speed` is composed and shown, the
-     * rest neither, so the game's own work is most of what runs; composing a
-     * frame costs more than running one, more so at higher resolutions.  The
-     * 3D engine still works out every frame: a swap shows what was sent the
-     * frame before, so a frame it skipped would show stale or empty.  A frame is
-     * shown sooner when a display period (1/60 s) has passed, so the window
-     * keeps its frame rate at any speed, unlimited (left Shift+Tab) included.  Not
-     * while the display capture is on: it reads the drawn frame back into
-     * VRAM for the game. */
+    /* Fast forward (Space, Tab or the pad's LT, at the settings' speed and
+     * mode): one frame in `speed` is composed and shown, the rest neither,
+     * so the game's own work is most of what runs; composing a frame costs
+     * more than running one, more so at higher resolutions.  The speed is
+     * in thousandths, so the pacer runs a fractional one (2.5x) exactly;
+     * the frames shown are the game frames the display period allows, never
+     * more than 60 a second.  The 3D engine still works out every frame: a
+     * swap shows what was sent the frame before, so a frame it skipped
+     * would show stale or empty.  Not while the display capture is on: it
+     * reads the drawn frame back into VRAM for the game. */
     {
         int ff;
 
@@ -2119,12 +2120,17 @@ static void boot_frame(void *user)
          * other players run at the game's own speed. */
         eidos_platform_fast_forward_lock(bw_mp_state() != BW_MP_OFF &&
                                          bw_mp_state() != BW_MP_ENDED);
-        ff = run->plat != NULL ? eidos_platform_fast_forward(run->plat) : 1;
+        ff = run->plat != NULL ? eidos_platform_fast_forward(run->plat)
+                               : EIDOS_FAST_FORWARD_1X;
 
-        run->ff_skip = ff > 1 && run->ff_since + 1u < (u32)ff
+        run->ff_acc += EIDOS_FAST_FORWARD_1X;
+        run->ff_skip = ff > EIDOS_FAST_FORWARD_1X
+            && run->ff_acc < (u32)ff
             && eidos_platform_now_ns(run->plat) - run->ff_shown_ns < 16666667ull
             && (bw_io_read32(0x04000064u) & 0x80000000u) == 0u;
-        run->ff_since = run->ff_skip ? run->ff_since + 1u : 0u;
+        if (!run->ff_skip) {
+            run->ff_acc = 0u;
+        }
     }
 #endif
     eidos_frame_run_one(&run->loop);
@@ -2155,9 +2161,9 @@ static void boot_frame(void *user)
         t_ph = eidos_prof_begin();
         /* Badly behind (two frames or more): skip showing this frame, at
          * most three in a row; the game's steps are never skipped.  Fast
-         * forward (Tab) shows a frame whenever a display period has passed
-         * since the last one, so the window keeps its frame rate whatever
-         * speed the host reaches. */
+         * forward shows a frame whenever a display period has passed since
+         * the last one, so the window keeps its frame rate whatever speed
+         * the host reaches. */
         if (run->ff_skip) {
             run->skipped = 0;
         } else if (eidos_platform_lag_frames(run->plat) >= 2u && run->skipped < 3u) {
@@ -2174,7 +2180,7 @@ static void boot_frame(void *user)
         eidos_prof_end(EIDOS_PROF_PRESENT, t_ph);
         audio_device = eidos_platform_audio_open(run->plat);
         t_ph = eidos_prof_begin();
-        if (audio_device && speed > 1) {
+        if (audio_device && speed > EIDOS_FAST_FORWARD_1X) {
             boot_audio_fast(run);
         } else if (audio_device) {
             boot_audio_push(run);

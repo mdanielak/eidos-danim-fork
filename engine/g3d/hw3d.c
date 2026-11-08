@@ -959,6 +959,7 @@ int g3d_hw_snapshot_add_quad(const s32 clip[4][4], const u8 *rgba, u32 w, u32 h)
     tx->w = w;
     tx->h = h;
     tx->partial = 0;
+    tx->sprite = 1;
     tx->content = 0;
     for (k = 0; k < 4u; k++) {
         G3dVertex *v = &s->verts[v0 + k];
@@ -1070,6 +1071,7 @@ static void build_snapshot(u32 d3, u32 cc, u32 cd, const G3dTarget *t,
                 }
                 if (content != 0 && q < g_snap_n_pool) {
                     s->tex[s->n_tex] = g_snap_pool[q];
+                    s->tex[s->n_tex].sprite = 0;
                     g_snap_pool[q].rgba = NULL;
                     seen[n_seen++] = tx->rgba;
                     slot = (s32)s->n_tex++;
@@ -1077,6 +1079,7 @@ static void build_snapshot(u32 d3, u32 cc, u32 cd, const G3dTarget *t,
                     continue;
                 }
                 s->tex[s->n_tex].content = content;
+                s->tex[s->n_tex].sprite = 0;
                 s->tex[s->n_tex].rgba = (u8 *)malloc(bytes);
                 if (s->tex[s->n_tex].rgba == NULL) {
                     free(seen);

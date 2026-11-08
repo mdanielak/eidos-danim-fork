@@ -128,7 +128,7 @@ struct EidosGl {
     GLuint p3d;
     GLint u_mode, u_alpha5, u_tex3, u_texture, u_texsize3, u_wrap, u_alpharef,
           u_toon, u_highlight, u_toontab, u_front, u_back, u_wbuf, u_pass,
-          u_id;
+          u_id, u_pixel_filter;
     GLuint pedge;                  /* the edge-marking pass (0: unavailable) */
     GLint ue_col, ue_id, ue_dep, ue_step, ue_cid, ue_cdep, ue_edge, ue_variant;
     GLuint pfog;                   /* the fog pass (0: unavailable)          */

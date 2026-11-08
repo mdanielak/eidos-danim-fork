@@ -59,7 +59,7 @@ int main(void)
     BW_CHECK_EQ("no grey bar", eidos_sui_has_back(), 0);
     row(0);
     BW_CHECK_EQ("the header is the tab", strcmp(g_label, "Display"), 0);
-    BW_CHECK_EQ("display rows", eidos_sui_row_count(), 1 + 6);
+    BW_CHECK_EQ("display rows", eidos_sui_row_count(), 1 + 7);
     row(1);
     BW_CHECK_EQ("mode label", strcmp(g_label, "Window mode"), 0);
     BW_CHECK_EQ("mode value", strcmp(g_value, "Windowed"), 0);
@@ -101,12 +101,22 @@ int main(void)
     BW_CHECK_EQ("GPU drawing label", strcmp(g_label, "GPU drawing"), 0);
     BW_CHECK_EQ("GPU drawing on by default", eidos_settings_get(EIDOS_OPT_GPU_2D), 1);
 
+    press(DOWN);
+    row(6);
+    BW_CHECK_EQ("pixel filter label", strcmp(g_label, "Pixel art filter"), 0);
+    BW_CHECK_EQ("pixel filter default", eidos_settings_get(EIDOS_OPT_PIXEL_FILTER), 0);
+    press(RIGHT);
+    BW_CHECK_EQ("pixel filter light", eidos_settings_get(EIDOS_OPT_PIXEL_FILTER), 1);
+    press(RIGHT);
+    BW_CHECK_EQ("pixel filter strong", eidos_settings_get(EIDOS_OPT_PIXEL_FILTER), 2);
+
     /* The action row puts the defaults back. */
     press(DOWN);
     row(eidos_sui_cursor_row());
     BW_CHECK_EQ("defaults row", strcmp(g_label, "Restore defaults"), 0);
     press(A);
     BW_CHECK_EQ("defaults restored", eidos_settings_get(EIDOS_OPT_DISPLAY_RESOLUTION), 0);
+    BW_CHECK_EQ("defaults restored: filter", eidos_settings_get(EIDOS_OPT_PIXEL_FILTER), 0);
     BW_CHECK_EQ("defaults restored: pixel scale",
                 eidos_settings_get(EIDOS_OPT_DISPLAY_PIXEL_SCALE), 0);
     press(DOWN);
@@ -134,20 +144,21 @@ int main(void)
     press(LEFT);
     BW_CHECK_EQ("volume -5", eidos_settings_get(EIDOS_OPT_SOUND_VOLUME), 45);
 
-    /* Controls: the button icons, 12 buttons and the defaults, six shown,
-     * a scrollbar. */
+    /* Controls: the button icons, 12 buttons, the two fast-forward
+     * bindings, its speed and mode, and the defaults, six shown, a
+     * scrollbar. */
     press(L);
     BW_CHECK_EQ("controls tab", eidos_sui_tab(), 2);
     BW_CHECK_EQ("controls rows shown", eidos_sui_row_count(), 1 + 6);
     eidos_sui_scroll(&first, &shown, &total);
     BW_CHECK_EQ("the scroll starts at the top", first, 0);
     BW_CHECK_EQ("six shown", shown, 6);
-    BW_CHECK_EQ("fourteen in all", total, 14);
+    BW_CHECK_EQ("eighteen in all", total, 18);
     press(UP);                                /* wraps to the last row */
     row(eidos_sui_cursor_row());
     BW_CHECK_EQ("last row", strcmp(g_label, "Restore defaults"), 0);
     eidos_sui_scroll(&first, &shown, &total);
-    BW_CHECK_EQ("scrolled to the bottom", first, 14 - 6);
+    BW_CHECK_EQ("scrolled to the bottom", first, 18 - 6);
     press(DOWN);                              /* wraps to the first row */
     row(eidos_sui_cursor_row());
     BW_CHECK_EQ("the button icons first", strcmp(g_label, "Button icons"), 0);
@@ -158,7 +169,34 @@ int main(void)
         BW_CHECK_EQ("bind value short", (int)strlen(g_value) <= 20, 1);
         press(DOWN);
     }
-    press(DOWN);                              /* back to the first row */
+    /* Fast forward's own two bindings: the key first, then the pad. */
+    row(eidos_sui_cursor_row());
+    BW_CHECK_EQ("fast forward key", strcmp(g_label, "Fast forward: key"), 0);
+    BW_CHECK_EQ("space by default", strcmp(g_value, "Space"), 0);
+    press(DOWN);
+    row(eidos_sui_cursor_row());
+    BW_CHECK_EQ("fast forward pad", strcmp(g_label, "Fast forward: pad"), 0);
+    BW_CHECK_EQ("left trigger by default", strcmp(g_value, "LT"), 0);
+    press(DOWN);
+    row(eidos_sui_cursor_row());
+    BW_CHECK_EQ("fast forward speed", strcmp(g_label, "Fast forward speed"), 0);
+    BW_CHECK_EQ("2x by default", strcmp(g_value, "2x"), 0);
+    press(RIGHT);
+    BW_CHECK_EQ("speed 2.5x", eidos_settings_get(EIDOS_OPT_FF_SPEED), 2);
+    BW_CHECK_EQ("speed text", strcmp(g_value, "2.5x"), 0);
+    press(LEFT);
+    BW_CHECK_EQ("speed back to 2x", eidos_settings_get(EIDOS_OPT_FF_SPEED), 1);
+    press(DOWN);
+    row(eidos_sui_cursor_row());
+    BW_CHECK_EQ("fast forward mode", strcmp(g_label, "Fast forward mode"), 0);
+    BW_CHECK_EQ("press by default", strcmp(g_value, "press"), 0);
+    press(RIGHT);
+    BW_CHECK_EQ("mode toggle", eidos_settings_get(EIDOS_OPT_FF_MODE), 1);
+    BW_CHECK_EQ("mode text", strcmp(g_value, "toggle"), 0);
+    press(LEFT);
+    BW_CHECK_EQ("mode back to press", eidos_settings_get(EIDOS_OPT_FF_MODE), 0);
+    press(DOWN);                              /* the defaults row */
+    press(DOWN);                              /* wraps to the first row */
     press(DOWN);                              /* past the button icons */
     row(eidos_sui_cursor_row());
     BW_CHECK_EQ("first button", strcmp(g_label, "A"), 0);

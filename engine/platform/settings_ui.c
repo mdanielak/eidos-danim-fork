@@ -100,6 +100,10 @@ static const char *const k_axis_neg_short[] = { "LS Left", "LS Up", "RS Left", "
 /* Help text (bottom screen).  Two lines per option id, then fixed texts. */
 static const char *const k_option_help[EIDOS_OPT_COUNT][2] = {
     [EIDOS_OPT_DISPLAY_MODE]        = { "The window mode.", "" },
+    [EIDOS_OPT_FF_SPEED]            = { "How much faster the game runs.",
+                                        "Both FF controls use it." },
+    [EIDOS_OPT_FF_MODE]             = { "Press: hold to speed up.",
+                                        "Toggle: a press starts and stops." },
     [EIDOS_OPT_DISPLAY_PIXEL_SCALE] = { "Size of each DS pixel.",
                                         "Auto fills the window." },
     [EIDOS_OPT_DISPLAY_RESOLUTION]  = { "Detail of the 3D.",
@@ -124,9 +128,17 @@ static const char *const k_option_help[EIDOS_OPT_COUNT][2] = {
                                         "never goes black." },
     [EIDOS_OPT_GPU_2D]              = { "The graphics card draws the",
                                         "screens. Off uses the CPU." },
+    [EIDOS_OPT_PIXEL_FILTER]        = { "Smooths battle sprites.",
+                                        "Strong rounds pixel-art corners." },
 };
 #define HELP_BIND1     "Bind a key or pad button."
 #define HELP_BIND2     ""
+#define STR_FF_KEY     "Fast forward: key"
+#define STR_FF_PAD     "Fast forward: pad"
+#define HELP_FF_KEY1   "Hold to speed the game up."
+#define HELP_FF_KEY2   "Shift: as fast as possible"
+#define HELP_FF_PAD1   "Hold to speed the game up."
+#define HELP_FF_PAD2   "Same as the key."
 #define HELP_DEFAULTS1 "Reset this page."
 #define HELP_DEFAULTS2 ""
 #define HELP_CAPTURE1  "Press a key or pad button."
@@ -234,12 +246,18 @@ static const char *const k_option_labels[EIDOS_OPT_COUNT] = {
     [EIDOS_OPT_OUTLINES]            = "3D outlines",
     [EIDOS_OPT_TRANSITIONS]         = "Map transitions",
     [EIDOS_OPT_GPU_2D]              = "GPU drawing",
+    [EIDOS_OPT_FF_SPEED]            = "Fast forward speed",
+    [EIDOS_OPT_FF_MODE]             = "Fast forward mode",
+    [EIDOS_OPT_PIXEL_FILTER]        = "Pixel art filter",
 };
 
 /* Value names that differ from the backend's lowercase choice names:
  * {option id, choice index, text}. */
 typedef struct ValueName { int id; int index; const char *text; } ValueName;
 static const ValueName k_value_names[] = {
+    { EIDOS_OPT_PIXEL_FILTER,       0, "None" },
+    { EIDOS_OPT_PIXEL_FILTER,       1, "Light" },
+    { EIDOS_OPT_PIXEL_FILTER,       2, "Strong" },
     { EIDOS_OPT_DISPLAY_MODE,        0, "Windowed" },
     { EIDOS_OPT_DISPLAY_MODE,        1, "Fullscreen" },
     { EIDOS_OPT_DISPLAY_MODE,        2, "Borderless" },
@@ -412,10 +430,16 @@ enum {
     ROW_MP_GAME,          /* a game the host kept: arg is its index       */
     ROW_MP_NEW_GAME,      /* a new game, named first                      */
     ROW_SESSION_REVERT,   /* the codes back to the committed state       */
-    ROW_SESSION_DEFAULTS  /* the codes back to nothing                    */
+    ROW_SESSION_DEFAULTS, /* the codes back to nothing                    */
+    ROW_FF_KEY,           /* fast forward's key (not a DS button)        */
+    ROW_FF_PAD            /* fast forward's pad control                   */
 };
 
 typedef struct Row { int type; int arg; int arg2; } Row;
+
+/* g.capturing: a DS button index + 1, or one of these two. */
+#define CAP_FF_KEY (-1)
+#define CAP_FF_PAD (-2)
 
 #define TAB_COUNT 8
 #define TAB_MODS 4
@@ -723,6 +747,7 @@ static void build_rows(void)
         add_row(ROW_OPTION, EIDOS_OPT_DISPLAY_RESOLUTION, 0);
         add_row(ROW_OPTION, EIDOS_OPT_OUTLINES, 0);
         add_row(ROW_OPTION, EIDOS_OPT_GPU_2D, 0);
+        add_row(ROW_OPTION, EIDOS_OPT_PIXEL_FILTER, 0);
         break;
     case 1:
         add_row(ROW_OPTION, EIDOS_OPT_LAYOUT_ARRANGEMENT, 0);
@@ -734,6 +759,10 @@ static void build_rows(void)
         for (i = 0; i < eidos_settings_button_count(); i++) {
             add_row(ROW_BIND, i, 0);
         }
+        add_row(ROW_FF_KEY, 0, 0);
+        add_row(ROW_FF_PAD, 0, 0);
+        add_row(ROW_OPTION, EIDOS_OPT_FF_SPEED, 0);
+        add_row(ROW_OPTION, EIDOS_OPT_FF_MODE, 0);
         break;
     case 3:
         add_row(ROW_OPTION, EIDOS_OPT_SOUND_VOLUME, 0);
@@ -1383,10 +1412,23 @@ static int poll_capture(void)
     int r;
     memset(&c, 0, sizeof c);
     r = eidos_settings_capture_poll(&c);
-    if (r == EIDOS_CAPTURE_KEY) {
-        eidos_settings_set_key(g.capturing - 1, 0, c.scancode);
-    } else if (r == EIDOS_CAPTURE_PAD) {
-        eidos_settings_set_pad(g.capturing - 1, 0, c.pad_kind, c.pad_index);
+    if (r == EIDOS_CAPTURE_KEY || r == EIDOS_CAPTURE_PAD) {
+        /* The two fast-forward rows take one device each; the other
+         * device's press is not an answer, so the capture stays armed. */
+        if ((g.capturing == CAP_FF_KEY && r == EIDOS_CAPTURE_PAD) ||
+            (g.capturing == CAP_FF_PAD && r == EIDOS_CAPTURE_KEY)) {
+            eidos_settings_capture_begin();
+            return 0;
+        }
+        if (g.capturing == CAP_FF_KEY) {
+            eidos_settings_set_fast_forward_key(c.scancode);
+        } else if (g.capturing == CAP_FF_PAD) {
+            eidos_settings_set_fast_forward_pad(c.pad_kind, c.pad_index);
+        } else if (r == EIDOS_CAPTURE_KEY) {
+            eidos_settings_set_key(g.capturing - 1, 0, c.scancode);
+        } else {
+            eidos_settings_set_pad(g.capturing - 1, 0, c.pad_kind, c.pad_index);
+        }
     } else if (r == EIDOS_CAPTURE_CANCELLED) {
         g.capturing = 0;
         g.wait_release = 1;
@@ -1768,6 +1810,14 @@ static int sui_input(unsigned pressed, unsigned held)
             eidos_settings_capture_begin();
             g.capturing = r->arg + 1;
             return EIDOS_SUI_REDRAW | EIDOS_SUI_SFX_SELECT;
+        case ROW_FF_KEY:
+            eidos_settings_capture_begin();
+            g.capturing = CAP_FF_KEY;
+            return EIDOS_SUI_REDRAW | EIDOS_SUI_SFX_SELECT;
+        case ROW_FF_PAD:
+            eidos_settings_capture_begin();
+            g.capturing = CAP_FF_PAD;
+            return EIDOS_SUI_REDRAW | EIDOS_SUI_SFX_SELECT;
         case ROW_DEFAULTS:
             /* the tab's own settings back to their defaults */
             if (g.tab == 2) {
@@ -1902,6 +1952,16 @@ int eidos_sui_row_pad(int row, char *key, int nk)
         return -1;
     }
     r = &g.rows[g.scroll + row - 1];
+    if (r->type == ROW_FF_PAD) {
+        int kind, index;
+
+        if (g.capturing == CAP_FF_PAD ||
+            eidos_settings_get_fast_forward_pad(&kind, &index) != 0 ||
+            kind < 0) {
+            return -1;
+        }
+        return pad_icon(kind, index);
+    }
     if (r->type != ROW_BIND || g.capturing == r->arg + 1) {
         return -1;
     }
@@ -2111,6 +2171,14 @@ int eidos_sui_touch(int row, int zone)
         eidos_settings_capture_begin();
         g.capturing = r->arg + 1;
         return EIDOS_SUI_REDRAW | EIDOS_SUI_SFX_SELECT;
+    case ROW_FF_KEY:
+        eidos_settings_capture_begin();
+        g.capturing = CAP_FF_KEY;
+        return EIDOS_SUI_REDRAW | EIDOS_SUI_SFX_SELECT;
+    case ROW_FF_PAD:
+        eidos_settings_capture_begin();
+        g.capturing = CAP_FF_PAD;
+        return EIDOS_SUI_REDRAW | EIDOS_SUI_SFX_SELECT;
     case ROW_DEFAULTS:
         if (was) {
             eidos_settings_defaults();
@@ -2282,6 +2350,33 @@ void eidos_sui_row_text(int row, char *label, int nl, char *value, int nv)
             put(value, nv, STR_PRESS_KEY);
         } else {
             bind_value(r->arg, value, nv);
+        }
+        break;
+    }
+    case ROW_FF_KEY:
+        put(label, nl, STR_FF_KEY);
+        if (g.capturing == CAP_FF_KEY) {
+            put(value, nv, STR_PRESS_KEY);
+        } else if (eidos_settings_get_fast_forward_key() > 0) {
+            eidos_scancode_name(eidos_settings_get_fast_forward_key(),
+                                buf, sizeof buf);
+            put(value, nv, buf);
+        } else {
+            put(value, nv, STR_UNBOUND);
+        }
+        break;
+    case ROW_FF_PAD: {
+        int kind = -1, index = 0;
+
+        put(label, nl, STR_FF_PAD);
+        if (g.capturing == CAP_FF_PAD) {
+            put(value, nv, STR_PRESS_KEY);
+        } else if (eidos_settings_get_fast_forward_pad(&kind, &index) == 0 &&
+                   kind >= 0) {
+            pad_short(kind, index, buf, sizeof buf);
+            put(value, nv, buf);
+        } else {
+            put(value, nv, STR_UNBOUND);
         }
         break;
     }
@@ -2597,6 +2692,14 @@ void eidos_sui_help_line(int i, char *out, int n)
         case ROW_BIND:
             l[0] = HELP_BIND1;
             l[1] = HELP_BIND2;
+            break;
+        case ROW_FF_KEY:
+            l[0] = HELP_FF_KEY1;
+            l[1] = HELP_FF_KEY2;
+            break;
+        case ROW_FF_PAD:
+            l[0] = HELP_FF_PAD1;
+            l[1] = HELP_FF_PAD2;
             break;
         case ROW_PANEL:
             l[0] = HELP_PANEL1;

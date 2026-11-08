@@ -46,8 +46,10 @@
  * many gamepad slots.  A slot is empty (0 / kind -1) or one control.
  * Conflict rule: binding a control that another slot already holds MOVES it:
  * the old slot is cleared.  A control is never bound twice, so one key never
- * presses two buttons.  Escape and F12 belong to the platform layer and
- * cannot be bound; Alt+Enter toggles borderless fullscreen.
+ * presses two buttons.  Fast forward has two bindings of its own, one key
+ * and one pad control (Space and the left trigger by default); they are not
+ * DS buttons and both do the same.  Escape and F12 belong to the platform
+ * layer and cannot be bound; Alt+Enter toggles borderless fullscreen.
  *
  * The file is <home>/settings.ini, beside config.txt (the EIDOS_SETTINGS
  * environment variable names another file).  It is plain text, [section] and
@@ -102,6 +104,10 @@ enum {
     EIDOS_OPT_GPU_2D,               /* the 2D screens composed by the GPU:
                                        0 off (the CPU), 1 on (the default;
                                        docs/gpu-2d.md)                     */
+    EIDOS_OPT_FF_SPEED,             /* fast forward's speed: 1.5x, 2x, 2.5x,
+                                       3x, 4x, 8x (options table order)     */
+    EIDOS_OPT_FF_MODE,              /* 0 press (hold), 1 toggle            */
+    EIDOS_OPT_PIXEL_FILTER,         /* 0 none, 1 light, 2 Scale3x          */
     EIDOS_OPT_COUNT
 };
 
@@ -265,6 +271,22 @@ int  eidos_settings_set_pad(int button, int slot, int kind, int index);
 
 /* Bindings (keyboard and gamepad) back to the defaults, applied. */
 void eidos_settings_reset_bindings(void);
+
+/*
+ * Fast forward's own two bindings, which are not DS buttons: a key (Space
+ * by default) and a pad control (the left trigger).  Either one, held, runs
+ * the game faster, and both do the same; its speed and press/toggle mode
+ * are the options EIDOS_OPT_FF_SPEED and EIDOS_OPT_FF_MODE.  They live in
+ * the file's [keys] and [pad] sections under "fastforward".  scancode 0 /
+ * kind -1: unbound.
+ * A control belongs to one thing: setting one of these takes the control
+ * away from the DS buttons, and binding it to a DS button takes it away
+ * from here.
+ */
+int  eidos_settings_get_fast_forward_key(void);
+void eidos_settings_set_fast_forward_key(int scancode);
+int  eidos_settings_get_fast_forward_pad(int *kind, int *index);
+void eidos_settings_set_fast_forward_pad(int kind, int index);
 
 /* ASCII names for display.  Always NUL-terminated in buf. */
 const char *eidos_scancode_name(int scancode, char *buf, size_t n);

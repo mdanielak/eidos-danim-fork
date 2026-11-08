@@ -357,10 +357,18 @@ QWERTZ or AZERTY keyboard. A caller may pass its own table. The defaults:
 | L | Q | R | E |
 | SELECT | Right Shift, Backspace | | |
 
-Escape quits, F12 writes a screenshot and a held Tab runs the game twice
-as fast, left Shift+Tab as fast as the computer can (the window keeps its
-frame rate, the sound keeps playing and skips ahead); those three are the platform
-layer's own and are not in the table. The button word keeps the DS keypad's bit order
+Escape quits, F12 writes a screenshot and Space or Tab turns fast forward
+on (left Shift as fast as the computer can; the window keeps its frame rate,
+the sound keeps playing and skips ahead). In Settings > Controls the speed
+is 1.5x, 2x (the default), 2.5x, 3x, 4x or 8x — the pacer takes a fractional
+speed exactly, while the frames drawn stay at the display rate — and its
+mode is press (hold, the default) or toggle (a press starts it, the next
+stops it; Alt+Tab keeps the toggle, while a multiplayer session or typing
+clears it). Alt+Tab itself does not count as the Tab fast-forward binding.
+Those settings are the platform layer's own and are not in the table; Space is fast forward's
+own binding (remappable, [keys] `fastforward`), and so is a pad control
+(the left trigger by default, [pad] `fastforward`); both do the same. The
+button word keeps the DS keypad's bit order
 (`KEYINPUT`, the SDK's `PAD_*`) but is active high, because every caller asks
 "is A down" and the inversion belongs at the one place that reads the
 register. No key may be bound to two buttons: the word is rebuilt from the
@@ -370,9 +378,10 @@ cannot leave a bit stuck down.
 **Gamepads** go through SDL's game controller API with a second table of the
 same kind (`EidosPadBinding`: a button, or an axis past half its travel). The
 default is positional, DS A/B/X/Y on the east/south/north/west face buttons
-(SDL is told to report positions on Nintendo pads too), the shoulders and
-triggers as L and R, Start and Back as START and SELECT, the d-pad and the
-left stick as the d-pad. Pads plugged in while running are picked up.
+(SDL is told to report positions on Nintendo pads too), the shoulders as L
+and R (the right trigger doubles R), Start and Back as START and SELECT,
+the d-pad and the left stick as the d-pad. The left trigger is fast
+forward's own control, not L. Pads plugged in while running are picked up.
 
 **The stylus** is the left mouse button, or a finger, on the bottom screen,
 mapped through the window's current size. Every pump hands the buttons and

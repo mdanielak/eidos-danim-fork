@@ -183,10 +183,10 @@ typedef struct BvSprite {
     uint32_t pos, tex, pltt;
 } BvSprite;
 
-static BvSprite g_sprites[8];
+static BvSprite g_sprites[16];
 static uint32_t g_n_sprites;
-static float g_box[8][4];
-static uint32_t g_box_frame[8];
+static float g_box[16][4];
+static uint32_t g_box_frame[16];
 static int g_cam_on;                /* the battle camera is known (G3D_CAMERA_Reset) */
 static BvJob *g_job;                /* running or just finished            */
 static BvPlaced *g_cur, *g_old;     /* placed scenes: current, the one before */
@@ -348,6 +348,10 @@ static void snapshot_hook(const G3dSnapshot *s)
                 (p->pltt_base != (sp->pltt >> 4) && p->pltt_base != (sp->pltt >> 3))) {
                 continue;
             }
+            if (s->poly_tex != NULL && s->poly_tex[i] >= 0 &&
+                (uint32_t)s->poly_tex[i] < s->n_tex) {
+                s->tex[s->poly_tex[i]].sprite = 1;
+            }
             (void)poly_opaque(s, i, &x0, &y0, &x1, &y1);
         }
         if (x1 > x0 && y1 > y0) {
@@ -362,7 +366,7 @@ static void snapshot_hook(const G3dSnapshot *s)
 
 int bw_battle_view_mon_box(int pos, float box[4])
 {
-    if (pos < 0 || pos > 7 || !bw_battle_view_active() ||
+    if (pos < 0 || pos > 15 || !bw_battle_view_active() ||
         bw_input_frame_number() - g_box_frame[pos] > 4u) {
         return 0;
     }
@@ -523,7 +527,9 @@ static void backdrop_hook(G3dBackdrop *out)
     }
     g_frame.valid = 0;
     if (g_sprites_only) {
-        effect_sprites();               /* the game's own backdrop: no scene */
+        if (eidos_ui_active()) {
+            effect_sprites();           /* the game's own backdrop: no scene */
+        }
         return;
     }
     out->valid = 1;
@@ -1160,7 +1166,7 @@ static void capture(uintptr_t eff, int warp)
              * only over the game's own pixels (plat_gl3d.c's stencil), so the
              * box may be loose: twice a Pokemon's size, a trainer taller */
             g_frame.poke[g_frame.n_poke][3] = pos <= 7u ? 12.0f : 18.0f;
-            if (pos <= 7u && g_n_sprites < 8u) {
+            if (pos <= 13u && g_n_sprites < 16u) {
                 g_sprites[g_n_sprites].pos = pos;
                 g_sprites[g_n_sprites].tex = rd32(mc, MCSSW_TEX);
                 g_sprites[g_n_sprites].pltt = rd32(mc, MCSSW_PLTT);
@@ -1549,10 +1555,9 @@ void __wrap_G3D_SYSTEM_DrawObject(void *obj, void *status)
         if (eidos_settings_get(EIDOS_OPT_BATTLE_PLATFORMS) == 0) {
             return;
         }
-    } else if (kind == OBJ_FIELD && eidos_ui_active()) {
-        /* the one-screen battle on the game's own backdrop: the backdrop
-         * is the game's, but its 2D is not shown either, so the frame's
-         * camera is kept for the effects' sprites */
+    } else if (kind == OBJ_FIELD) {
+        /* Battle on the game's own backdrop or dual-screen: snapshot_hook
+         * tags Pokemon and trainer sprite textures so the pixel filter smoothes them. */
         if (!g_hooked) {
             g3d_hw_set_backdrop_hook(backdrop_hook);
             g3d_hw_set_snapshot_hook(snapshot_hook);

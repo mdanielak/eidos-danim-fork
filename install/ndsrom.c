@@ -11,9 +11,14 @@
  *
  * The work is done in two passes.  The first reads the tables and builds
  * the complete list of regions to write, checking every one against the
- * image and against each other (ndsrom.py's RegionMap: nothing may run past
- * the end, nothing may overlap).  Only if the whole plan is sound does the
- * second pass write anything, so a malformed image leaves no files behind.
+ * image.  Only if the whole plan is sound does the second pass write
+ * anything, so a malformed image leaves no files behind.  Regions may
+ * overlap: ROM hacks relocate the FNT, FAT and banner and leave the DSi-only
+ * fields inconsistent (JetBlack does), and each region is written to its own
+ * file, so a repeated byte range is harmless.  ndsrom.py's overlap check
+ * exists only for the residue pass of its ROM rebuild, which eidos has no
+ * use for.
+ *
  * The second pass writes into a staging directory that is renamed into
  * place only when complete (see bw_rom_extract in install.h).
  *
@@ -250,37 +255,62 @@ static u16 header_crc(const u8 *h)
     return (u16)crc;
 }
 
-/* The SHA-1 of every dump eidos knows to be good. */
+/* The SHA-1 of every dump eidos knows to be good.  `note` names an image
+ * that is not the cartridge's own dump: a translation whose game data and
+ * header were rebuilt, recorded so its players are not refused. */
 static const struct {
     const char *gamecode;
     u32         size;
     const char *sha1;
+    const char *note;
 } KNOWN_DUMPS[] = {
-    { "IRBO", BW_BLACK_SIZE, BW_BLACK_SHA1 },
+    { "IRBO", BW_BLACK_SIZE, BW_BLACK_SHA1, NULL },
     /* the other cartridges the port lays out as English Black's
      * (sdk/langmap.h), aletheia docs/ROMS.md */
-    { "IRAO", BW_BLACK_SIZE, "bc696a0dfb448c7b3a8a206f0f8214411a039208" },
-    { "IRBF", BW_BLACK_SIZE, "a559da54839663d8f8f3f03382e5665a61873d22" },
-    { "IRAF", BW_BLACK_SIZE, "28f075915dd445cbfd902f1e1a94d5048b03a095" },
-    { "IRBD", BW_BLACK_SIZE, "f5688bd617be7e67a150732f42cfae6ae104b2cb" },
-    { "IRAD", BW_BLACK_SIZE, "fb752b211351f8480e3e1949e11a1d7741f05f5a" },
-    { "IRBI", BW_BLACK_SIZE, "699f8c6a8390b5e30236b6c386bc3c4bd7bdc44e" },
-    { "IRAI", BW_BLACK_SIZE, "2e33164d26236dd499f75d1de3123d85e822d502" },
-    { "IRBS", BW_BLACK_SIZE, "68b55b82f5a033f9e9666c232f429e31ed658e54" },
-    { "IRAS", BW_BLACK_SIZE, "4cc963ca925409ff0f12f3c417d1cbe1094bf934" },
+    { "IRAO", BW_BLACK_SIZE, "bc696a0dfb448c7b3a8a206f0f8214411a039208", NULL },
+    { "IRBF", BW_BLACK_SIZE, "a559da54839663d8f8f3f03382e5665a61873d22", NULL },
+    { "IRAF", BW_BLACK_SIZE, "28f075915dd445cbfd902f1e1a94d5048b03a095", NULL },
+    { "IRBD", BW_BLACK_SIZE, "f5688bd617be7e67a150732f42cfae6ae104b2cb", NULL },
+    { "IRAD", BW_BLACK_SIZE, "fb752b211351f8480e3e1949e11a1d7741f05f5a", NULL },
+    { "IRBI", BW_BLACK_SIZE, "699f8c6a8390b5e30236b6c386bc3c4bd7bdc44e", NULL },
+    { "IRAI", BW_BLACK_SIZE, "2e33164d26236dd499f75d1de3123d85e822d502", NULL },
+    { "IRBS", BW_BLACK_SIZE, "68b55b82f5a033f9e9666c232f429e31ed658e54", NULL },
+    { "IRAS", BW_BLACK_SIZE, "4cc963ca925409ff0f12f3c417d1cbe1094bf934", NULL },
+    /* Pokemon Black (USA/Europe) with the Polish translation pokebwpl 1.02
+     * (pokemonbw.pl): its message and font files were rebuilt, so the image
+     * hashes differently, while ARM9 and the overlays are the English ones.
+     * The header checksum is the patch's own and is checked as for any
+     * image, and the extraction reads the patch's own file table. */
+    { "IRBO", BW_BLACK_SIZE, "922cab4195e41998dfb021a8bc950797796faf4a",
+      "Pokemon Black (USA/Europe) with the Polish translation pokebwpl 1.02" },
+    /* Pokemon Black (USA/Europe) with both the Polish translation pokebwpl
+     * 1.02 and the JetBlack 1.7 content patch, merged at NitroFS file level
+     * (build-tools/merge_jetblack2.py) because JetBlack's xdelta cannot apply
+     * to the already-patched image.  ARM9 and the overlays are still the
+     * English cartridge's. */
+    { "IRBO", BW_BLACK_SIZE, "bd9f0fb1973a1f724d86e6ae633cfa1217acb227",
+      "Pokemon Black (USA/Europe) with the Polish translation pokebwpl 1.02 and JetBlack 1.7" },
+    /* Pokemon Black (USA/Europe) with the Polish translation pokebwpl 1.02, JetBlack 1.7, and review fixes (fixed3) */
+    { "IRBO", BW_BLACK_SIZE, "1c5e9deb8d53a2d8e896019f880e654d703d9344",
+      "Pokemon Black (USA/Europe) with the Polish translation pokebwpl 1.02 and JetBlack 1.7 (Fixed 3)" },
 };
 
-static int is_known(const char *gamecode, const char *sha1_hex)
+static int known_index(const char *gamecode, const char *sha1_hex)
 {
     size_t i;
 
     for (i = 0; i < sizeof(KNOWN_DUMPS) / sizeof(KNOWN_DUMPS[0]); i++) {
         if (strcmp(gamecode, KNOWN_DUMPS[i].gamecode) == 0
             && strcmp(sha1_hex, KNOWN_DUMPS[i].sha1) == 0) {
-            return 1;
+            return (int)i;
         }
     }
-    return 0;
+    return -1;
+}
+
+static int is_known(const char *gamecode, const char *sha1_hex)
+{
+    return known_index(gamecode, sha1_hex) >= 0;
 }
 
 int bw_rom_known_sha1(const char *sha1_hex)
@@ -422,7 +452,16 @@ BwRomVerdict bw_rom_verdict(const BwRomInfo *info, char *msg, size_t msg_len)
     if (info->verified) {
         const char *game = info->gamecode[2] == 'A' ? "Pokemon White" : "Pokemon Black";
         const char *lang = info->gamecode[3] == 'O' ? "" : region_name(info->gamecode[3]);
+        const char *sha = info->trimmed && info->padded_sha1_hex[0] != '\0'
+                          ? info->padded_sha1_hex : info->sha1_hex;
+        int k = known_index(info->gamecode, sha);
 
+        if (k >= 0 && KNOWN_DUMPS[k].note != NULL) {
+            say(msg, msg_len, "%s, a patched image: eidos plays it as Pokemon "
+                "Black and reads the game data it carries.",
+                KNOWN_DUMPS[k].note);
+            return BW_VERDICT_OK;
+        }
         say(msg, msg_len, info->trimmed
             ? "%s%s%s%s, the known good dump (trimmed, but only of padding)"
             : "%s%s%s%s, the known good dump", game, lang[0] != '\0' ? " (" : "", lang,
@@ -517,53 +556,6 @@ static int plan_add(Plan *p, const Rom *rom, const char *name, u32 offset,
         say(err, err_len, "path too long: %s", path);
         return -1;
     }
-    return 0;
-}
-
-static int cmp_region(const void *a, const void *b)
-{
-    const Region *x = *(const Region *const *)a;
-    const Region *y = *(const Region *const *)b;
-
-    if (x->offset != y->offset) {
-        return x->offset < y->offset ? -1 : 1;
-    }
-    return x->size < y->size ? -1 : (x->size > y->size);
-}
-
-/* ndsrom.py's occupied_intervals: no two non-empty regions may overlap. */
-static int plan_check_overlaps(const Plan *p, char *err, size_t err_len)
-{
-    const Region **v;
-    u32 n = 0;
-    u32 i;
-    u32 end = 0;
-    int have = 0;
-
-    v = (const Region **)malloc((p->count + 1) * sizeof(*v));
-    if (v == NULL) {
-        say(err, err_len, "out of memory");
-        return -1;
-    }
-    for (i = 0; i < p->count; i++) {
-        if (p->r[i].size != 0) {
-            v[n++] = &p->r[i];
-        }
-    }
-    qsort(v, n, sizeof(*v), cmp_region);
-    for (i = 0; i < n; i++) {
-        if (have && v[i]->offset < end) {
-            say(err, err_len, "overlapping regions detected near 0x%X (previous region ends at 0x%X)",
-                (unsigned)v[i]->offset, (unsigned)end);
-            free((void *)v);
-            return -1;
-        }
-        if (!have || v[i]->offset + v[i]->size > end) {
-            end = v[i]->offset + v[i]->size;
-        }
-        have = 1;
-    }
-    free((void *)v);
     return 0;
 }
 
@@ -972,6 +964,38 @@ out:
     return rc;
 }
 
+/*
+ * The ARM9 section may end in zero padding after the BLZ container's
+ * footer, and then the footer is not the section's last eight bytes: the
+ * container reads as "stored" and the compressed bytes are copied as if
+ * they were the image.  JetBlack leaves twelve bytes of padding.  When the
+ * section's own end gives no container, look for a footer inside the
+ * trailing zeros and use the length it closes.
+ */
+static u32 arm9_container_len(const u8 *img, u32 n, char *err, size_t err_len)
+{
+    u32 cut;
+    u32 end = n;
+    u32 size = bw_blz_size(img, n, err, err_len);
+
+    if (size != 0 && size != n) {
+        return n;                  /* a container ending where the section does */
+    }
+    while (end > 0 && img[end - 1] == '\0') {
+        end--;
+    }
+    for (cut = 4; cut <= n - end && cut <= 0x100u; cut += 4) {
+        char why[128];
+        u32 len = n - cut;
+        u32 size = bw_blz_size(img, len, why, sizeof(why));
+
+        if (size != 0 && size != len) {
+            return len;
+        }
+    }
+    return n;
+}
+
 int bw_rom_extract(const char *rom_path, const char *out_dir,
                    const BwExtractOptions *opt, BwExtractResult *result,
                    BwProgressFn progress, void *ctx,
@@ -999,6 +1023,7 @@ int bw_rom_extract(const char *rom_path, const char *out_dir,
     u64 done = 0;
     u32 arm9_region = 0;
     u32 arm9_size = 0;
+    u32 arm9_len = 0;
     u32 banner_version = 0;
     int have_banner = 0;
     char sha_hex[41];
@@ -1321,10 +1346,6 @@ int bw_rom_extract(const char *rom_path, const char *out_dir,
             goto done;
     }
 
-    if (plan_check_overlaps(&plan, err, err_len) != 0) {
-        goto done;
-    }
-
     /* --- arm9_dec.bin: decompress before writing anything ------------ */
     if (!opt->no_decompress && arm9_size != 0) {
         u32 dec_size;
@@ -1335,7 +1356,8 @@ int bw_rom_extract(const char *rom_path, const char *out_dir,
             say(err, err_len, "cannot read the ARM9 binary");
             goto done;
         }
-        dec_size = bw_blz_size(arm9, arm9_size, err, err_len);
+        arm9_len = arm9_container_len(arm9, arm9_size, err, err_len);
+        dec_size = bw_blz_size(arm9, arm9_len, err, err_len);
         if (dec_size == 0) {
             goto done;
         }
@@ -1350,7 +1372,7 @@ int bw_rom_extract(const char *rom_path, const char *out_dir,
             say(err, err_len, "out of memory");
             goto done;
         }
-        if (bw_blz_decompress(arm9, arm9_size, arm9_dec, dec_size, err, err_len) != 0) {
+        if (bw_blz_decompress(arm9, arm9_len, arm9_dec, dec_size, err, err_len) != 0) {
             goto done;
         }
         res.arm9_dec_size = dec_size;

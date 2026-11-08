@@ -44,8 +44,12 @@ lobbies is still experimental.
   redrawn battle menus
 - 3D drawn on the GPU at a higher internal resolution, with fog, edge
   marking and anti-aliasing
-- Instant text, and fast forward: Tab for 2x, left Shift+Tab for as fast
-  as the computer can
+- Optional magnification for recognized battle sprites: None, Light or Strong
+  (Scale3x), in Settings > Display (see `docs/pixel-filter.md`)
+- Instant text, and fast forward: hold Space (or Tab, or the pad's left
+  trigger) for 2x, add left Shift for as fast as the computer can; the
+  speed (1.5x to 8x, 2.5x included) and a press/toggle mode are in
+  Settings > Controls, as are both the key and the pad binding
 - Keyboard and gamepad, remappable, and the port's settings inside the
   game's Options screen
 - 64-bit builds for Windows, macOS (Apple silicon) and Linux, and a
@@ -126,7 +130,9 @@ extracts it. Saves go to `%APPDATA%\eidos\saves` on Windows.
 | L | Q | R | E |
 | SELECT | Right Shift | Touch | Left mouse button |
 
-Tab: fast forward. Alt+Return: fullscreen. F12: screenshot.
+Space or Tab: fast forward (the pad's left trigger does the same; hold, or
+press once in the toggle mode; speed in Settings > Controls).
+Alt+Return: fullscreen. F12: screenshot.
 
 ## Community
 

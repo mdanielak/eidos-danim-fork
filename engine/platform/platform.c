@@ -89,6 +89,15 @@ struct EidosPlatform {
     EidosKeyBinding *keymap_own;    /* set by eidos_platform_set_bindings    */
     EidosPadBinding *padmap_own;
     int swallow_sc;                 /* a key held after Alt+Enter, not a press */
+    /* fast forward's own controls (settings): a key and a pad control; the
+     * key-event state is a fallback for SDL_GetKeyboardState */
+    int             ff_sc;
+    EidosPadBinding ff_pad;
+    int             ff_tab_down, ff_key_down;
+    int             ff_speed;       /* thousandths: 1000 is the game's speed */
+    int             ff_toggle;      /* mode: a press starts and stops it   */
+    int             ff_toggle_on;   /* that mode's state                   */
+    int             ff_prev;        /* the controls held at the last pump  */
     /* typing for the one-screen layout's name entry (eidos_platform_text_mode):
      * the keyboard's letters are text, not buttons; the arrows still move */
     int text_mode;
@@ -217,8 +226,9 @@ static u32 read_keyboard(const EidosPlatform *p)
 /*
  * Positional: SDL's face buttons are named by position (south, east, west,
  * north) on every pad, and the DS's A/B/X/Y are east/south/north/west, so
- * each DS button lands where it sits on a DS.  The left stick doubles the d-pad and the triggers double
- * the shoulders, past half their travel.
+ * each DS button lands where it sits on a DS.  The left stick doubles the
+ * d-pad and the right trigger doubles R.  The left trigger is fast forward's
+ * own control (ff_pad below), not a DS button.
  */
 static const EidosPadBinding k_default_padmap[] = {
     { EIDOS_PADBIND_BUTTON, SDL_GAMEPAD_BUTTON_EAST,            EIDOS_PAD_A },
@@ -237,7 +247,6 @@ static const EidosPadBinding k_default_padmap[] = {
     { EIDOS_PADBIND_AXIS_POS, SDL_GAMEPAD_AXIS_LEFTY,         EIDOS_PAD_DOWN },
     { EIDOS_PADBIND_AXIS_NEG, SDL_GAMEPAD_AXIS_LEFTX,         EIDOS_PAD_LEFT },
     { EIDOS_PADBIND_AXIS_POS, SDL_GAMEPAD_AXIS_LEFTX,         EIDOS_PAD_RIGHT },
-    { EIDOS_PADBIND_AXIS_POS, SDL_GAMEPAD_AXIS_LEFT_TRIGGER,   EIDOS_PAD_L },
     { EIDOS_PADBIND_AXIS_POS, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER,  EIDOS_PAD_R },
 };
 
@@ -633,22 +642,97 @@ void eidos_platform_fast_forward_lock(int locked)
     g_fast_forward_locked = locked != 0;
 }
 
+/* Fast forward's own pad control, read from every open pad. */
+static int ff_pad_held(const EidosPlatform *p)
+{
+    int k;
+
+    if (p->ff_pad.kind < 0) {
+        return 0;
+    }
+    for (k = 0; k < MAX_PADS; k++) {
+        if (p->pads[k] != NULL && pad_binding_held(p->pads[k], &p->ff_pad)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Any of fast forward's controls held now: Tab, the settings' key or the
+ * settings' pad control.  The key state from the events stands in when
+ * SDL's keyboard state is stale. */
+static int ff_held(const EidosPlatform *p)
+{
+    const bool *keys;
+    int alt;
+
+    if (p->text_mode) {
+        return 0;               /* typing: Space is a character */
+    }
+    keys = SDL_GetKeyboardState(NULL);
+    alt = keys != NULL && (keys[SDL_SCANCODE_LALT] || keys[SDL_SCANCODE_RALT]);
+    return (!alt && ((keys != NULL && keys[SDL_SCANCODE_TAB]) || p->ff_tab_down))
+           || (p->ff_sc > 0 &&
+               (p->ff_sc != SDL_SCANCODE_TAB || !alt) &&
+               ((keys != NULL && keys[p->ff_sc]) || p->ff_key_down))
+           || ff_pad_held(p);
+}
+
+/* The toggle mode's edge, once a pump: a control going down flips the state.
+ * Text entry or a multiplayer lock clears it; Alt+Tab keeps the latch. */
+static void ff_update_toggle(EidosPlatform *p)
+{
+    int held;
+
+    if ((SDL_GetWindowFlags(p->window) & SDL_WINDOW_INPUT_FOCUS) == 0) {
+        p->ff_prev = 1;          /* ignore controls held when returning */
+        return;
+    }
+
+    if (p->text_mode) {
+        /* The keys are text now: no edge when typing ends with Space down. */
+        p->ff_toggle_on = 0;
+        p->ff_prev = 1;
+        return;
+    }
+    if (p->cap_state != EIDOS_CAPTURE_NONE) {
+        /* The settings screen is taking this press as a binding: it is not
+         * a start or a stop, and the key may still be down afterwards. */
+        p->ff_toggle_on = 0;
+        p->ff_prev = ff_held(p);
+        return;
+    }
+    held = ff_held(p);
+    if (!p->ff_toggle || g_fast_forward_locked) {
+        p->ff_toggle_on = 0;
+    } else if (held && !p->ff_prev) {
+        p->ff_toggle_on = !p->ff_toggle_on;
+    }
+    p->ff_prev = held;
+}
+
 int eidos_platform_fast_forward(const EidosPlatform *p)
 {
     const bool *keys;
+    int shift, down;
 
     if (p == NULL || p->window == NULL) {
-        return 0;
+        return EIDOS_FAST_FORWARD_1X;
     }
     if (g_fast_forward_locked) {
-        return 1;
+        return EIDOS_FAST_FORWARD_1X;
+    }
+    if (p->text_mode) {
+        return EIDOS_FAST_FORWARD_1X;   /* typing: Space is a character */
     }
     /* SDL keeps the state of the window with keyboard focus only, so the
-     * key does nothing while another program has the focus. */
+     * keys do nothing while another program has the focus.  The state from
+     * the key events stands in when SDL's keyboard state is stale. */
     keys = SDL_GetKeyboardState(NULL);
-    if (keys != NULL && keys[SDL_SCANCODE_TAB]) {
-        return keys[SDL_SCANCODE_LSHIFT] ? EIDOS_FAST_FORWARD_MAX
-                                         : EIDOS_FAST_FORWARD;
+    shift = keys != NULL && keys[SDL_SCANCODE_LSHIFT];
+    down = p->ff_toggle ? p->ff_toggle_on : ff_held(p);
+    if (down) {
+        return shift ? EIDOS_FAST_FORWARD_MAX : p->ff_speed;
     }
     /* EIDOS_FAST_UNTIL_BATTLE (the spot editor's Preview in game): as fast
      * as possible until the first battle shows, then the normal speed; =start
@@ -678,7 +762,8 @@ int eidos_platform_fast_forward(const EidosPlatform *p)
 
         if (env < 0) {
             const char *v = getenv("EIDOS_FAST_FORWARD");
-            env = (v == NULL || *v == '\0' || strcmp(v, "0") == 0) ? 1
+            env = (v == NULL || *v == '\0' || strcmp(v, "0") == 0)
+                ? EIDOS_FAST_FORWARD_1X
                 : strcmp(v, "max") == 0 ? EIDOS_FAST_FORWARD_MAX
                 : EIDOS_FAST_FORWARD;
         }
@@ -722,14 +807,15 @@ void eidos_platform_wait_frame(EidosPlatform *p)
             return;
         }
     }
-    /* Fast forward: the period is the factor times shorter (with
+    /* Fast forward: the period is the speed times shorter (the speed is in
+     * thousandths, so 2500 is two and a half times; with
      * EIDOS_FAST_FORWARD_MAX the host is always behind, so it never waits). */
-    period = (u64)EIDOS_DS_FRAME_CLOCKS * 1000000000ull
+    period = (u64)EIDOS_DS_FRAME_CLOCKS * 1000000000ull * 1000ull
              / (u64)eidos_platform_fast_forward(p);
     step = period / (u64)EIDOS_DS_SYSTEM_CLOCK;
-    /* 560190 * 10^9 mod 33513982 = 3790034, the part of the period the
-     * integer nanosecond count drops.  Accumulating it adds the missing
-     * nanosecond back every ninth frame instead of losing 0.113 ns a frame. */
+    /* The part of the period the integer nanosecond count drops.
+     * Accumulating it adds the missing nanosecond back instead of losing a
+     * fraction of one every frame. */
     rem_step = period % (u64)EIDOS_DS_SYSTEM_CLOCK;
     now = now_ns(p);
     if (!p->paced) {
@@ -1526,6 +1612,42 @@ int eidos_platform_set_bindings(EidosPlatform *p, const EidosKeyBinding *keys,
     return 0;
 }
 
+void eidos_platform_set_fast_forward_bindings(EidosPlatform *p, int scancode,
+                                              const EidosPadBinding *pad)
+{
+    if (p == NULL) {
+        return;
+    }
+    p->ff_sc = scancode > 0 && scancode < SDL_SCANCODE_COUNT ? scancode : 0;
+    if (pad != NULL && pad->kind >= EIDOS_PADBIND_BUTTON &&
+        pad->kind <= EIDOS_PADBIND_AXIS_NEG && pad->index >= 0) {
+        p->ff_pad.kind = pad->kind;
+        p->ff_pad.index = pad->index;
+    } else {
+        p->ff_pad.kind = -1;
+        p->ff_pad.index = 0;
+    }
+    p->ff_key_down = 0;
+}
+
+void eidos_platform_set_fast_forward_speed(EidosPlatform *p, int milli)
+{
+    if (p == NULL) {
+        return;
+    }
+    p->ff_speed = milli >= EIDOS_FAST_FORWARD_1X && milli <= 16000
+                  ? milli : EIDOS_FAST_FORWARD;
+}
+
+void eidos_platform_set_fast_forward_mode(EidosPlatform *p, int toggle)
+{
+    if (p == NULL) {
+        return;
+    }
+    p->ff_toggle = toggle != 0;
+    p->ff_toggle_on = 0;
+}
+
 int eidos_platform_init(EidosPlatform **out, const EidosPlatformConfig *cfg)
 {
     EidosPlatformConfig defaults;
@@ -1563,6 +1685,13 @@ int eidos_platform_init(EidosPlatform **out, const EidosPlatformConfig *cfg)
     p->swap = cfg->swap_screens != 0;
     p->volume = 100;
     p->swallow_sc = -1;
+    p->ff_sc = SDL_SCANCODE_SPACE;
+    p->ff_pad.kind = EIDOS_PADBIND_AXIS_POS;
+    p->ff_pad.index = SDL_GAMEPAD_AXIS_LEFT_TRIGGER;
+    p->ff_speed = EIDOS_FAST_FORWARD;
+    p->ff_toggle = 0;
+    p->ff_toggle_on = 0;
+    p->ff_prev = 0;
     if (cfg->keymap != NULL && cfg->keymap_count > 0) {
         p->keymap = cfg->keymap;
         p->keymap_count = cfg->keymap_count;
@@ -1867,6 +1996,14 @@ int eidos_platform_pump(EidosPlatform *p)
             if (ev.key.repeat) {
                 break;
             }
+            /* Fast forward's own state, kept from the events as well as
+             * from SDL_GetKeyboardState (which can be stale). */
+            if (ev.key.scancode == SDL_SCANCODE_TAB) {
+                p->ff_tab_down = 1;
+            }
+            if (p->ff_sc > 0 && (int)ev.key.scancode == p->ff_sc) {
+                p->ff_key_down = 1;
+            }
             if (ev.key.scancode == SDL_SCANCODE_RETURN &&
                 (ev.key.mod & SDL_KMOD_ALT)) {
                 /* Alt+Enter: windowed <-> borderless.  The Return that
@@ -1897,6 +2034,17 @@ int eidos_platform_pump(EidosPlatform *p)
             if ((int)ev.key.scancode == p->swallow_sc) {
                 p->swallow_sc = -1;
             }
+            if (ev.key.scancode == SDL_SCANCODE_TAB) {
+                p->ff_tab_down = 0;
+            }
+            if (p->ff_sc > 0 && (int)ev.key.scancode == p->ff_sc) {
+                p->ff_key_down = 0;
+            }
+            break;
+        case SDL_EVENT_WINDOW_FOCUS_LOST:
+            /* No key-up arrives while another program has the focus. */
+            p->ff_tab_down = p->ff_key_down = 0;
+            p->ff_prev = 1;      /* preserve toggle, await a fresh press */
             break;
         case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
             p->pad_last = 1;
@@ -1968,6 +2116,7 @@ int eidos_platform_pump(EidosPlatform *p)
                  ? read_keyboard(p) | read_pads(p) : 0u;
     p->buttons_pressed = p->buttons & ~p->buttons_prev;
     read_stylus(p);
+    ff_update_toggle(p);
 
     /* The port's input layer takes it from here (sdk/input.h): it reaches
      * KEYINPUT, the ARM7's XY halfword and the touch panel at the next

@@ -43,6 +43,11 @@ static const char *const k_offon[] = { "off", "on" };
 static const char *const k_backdrops[] = { "real map", "original" };
 static const char *const k_outlines[] = { "off", "thin" };
 static const char *const k_transitions[] = { "original", "fast", "seamless" };
+static const char *const k_ff_speeds[] = {
+    "1.5x", "2x", "2.5x", "3x", "4x", "8x"
+};
+static const char *const k_ff_modes[] = { "press", "toggle" };
+static const char *const k_pixel_filters[] = { "none", "light", "strong" };
 static const char *const k_pad_icons[] = {
     "auto", "xbox360", "xboxone", "ps3", "ps4", "ps5", "switch", "gamecube", "steamdeck"
 };
@@ -86,6 +91,12 @@ static const EidosOption k_options[EIDOS_OPT_COUNT] = {
       1, 0, k_transitions, "", 0, NULL },
     { "Display", "gpu_2d", "2D on the GPU", EIDOS_OPTKIND_CHOICE, 0, 1, 1,
       1, k_offon, "", 0, NULL },
+    { "Controls", "fastforward_speed", "Fast forward speed",
+      EIDOS_OPTKIND_CHOICE, 0, 5, 1, 1, k_ff_speeds, "", 0, NULL },
+    { "Controls", "fastforward_mode", "Fast forward mode",
+      EIDOS_OPTKIND_CHOICE, 0, 1, 1, 0, k_ff_modes, "", 0, NULL },
+    { "Display", "pixel_filter", "Pixel art filter",
+      EIDOS_OPTKIND_CHOICE, 0, 2, 1, 0, k_pixel_filters, "", 0, NULL },
 };
 
 /* sdk/field_fade.c reads this option by number */
@@ -172,6 +183,9 @@ typedef struct Model {
     int v[EIDOS_OPT_COUNT];
     int key[NBTN][EIDOS_BIND_SLOTS];
     PadCtl pad[NBTN][EIDOS_BIND_SLOTS];
+    /* Fast forward's own controls: not DS buttons, both run the same. */
+    int ff_key;
+    PadCtl ff_pad;
     NetModel net;
     int inject_max;                 /* the longest press the port allows */
     int panel_visible;               /* the run-status panel: 1 when shown */
@@ -277,6 +291,10 @@ static void model_defaults(Model *m)
             }
         }
     }
+    /* Fast forward: Space and the left trigger, which is not a DS button. */
+    m->ff_key = SDL_SCANCODE_SPACE;
+    m->ff_pad.kind = EIDOS_PADBIND_AXIS_POS;
+    m->ff_pad.index = SDL_GAMEPAD_AXIS_LEFT_TRIGGER;
     /* The network settings start empty: the port has no relay of its own
      * (the session calls say "no relay"), the control is off and the
      * player has no name yet (the service's own default stands).  The
@@ -303,6 +321,8 @@ static void model_reset_bindings(Model *m)
     model_defaults(&d);
     memcpy(m->key, d.key, sizeof(m->key));
     memcpy(m->pad, d.pad, sizeof(m->pad));
+    m->ff_key = d.ff_key;
+    m->ff_pad = d.ff_pad;
 }
 
 /*
@@ -373,6 +393,27 @@ static void apply_panel(void)
     }
 }
 
+/* Fast forward's own controls: the two bindings, the speed and the mode.
+ * Its speed choices are names; these are the thousandths the platform
+ * takes (2.5x is exact). */
+static void apply_ff_controls(void)
+{
+    static const int milli[] = { 1500, 2000, 2500, 3000, 4000, 8000 };
+    EidosPadBinding ff;
+
+    if (g_plat == NULL) {
+        return;
+    }
+    ff.kind = g_cur.ff_pad.kind;
+    ff.index = g_cur.ff_pad.index;
+    ff.button = 0;
+    eidos_platform_set_fast_forward_bindings(g_plat, g_cur.ff_key, &ff);
+    eidos_platform_set_fast_forward_speed(
+        g_plat, milli[g_cur.v[EIDOS_OPT_FF_SPEED]]);
+    eidos_platform_set_fast_forward_mode(
+        g_plat, g_cur.v[EIDOS_OPT_FF_MODE] != 0);
+}
+
 static int apply_bindings(void)
 {
     EidosKeyBinding *keys;
@@ -405,6 +446,7 @@ static int apply_bindings(void)
     rc = eidos_platform_set_bindings(g_plat, keys, nk, pads, np);
     free(keys);
     free(pads);
+    apply_ff_controls();
     return rc;
 }
 
@@ -434,6 +476,10 @@ static int apply_option_group(int id)
         return 0;
     case EIDOS_OPT_OUTLINES:
         apply_outlines();
+        return 0;
+    case EIDOS_OPT_FF_SPEED:
+    case EIDOS_OPT_FF_MODE:
+        apply_ff_controls();
         return 0;
     default:
         return 0;
@@ -1545,6 +1591,9 @@ int eidos_settings_set_key(int button, int slot, int scancode)
     if (scancode == SDL_SCANCODE_ESCAPE || scancode == SDL_SCANCODE_F12) {
         return -2;
     }
+    if (scancode != 0 && scancode == g_cur.ff_key) {
+        g_cur.ff_key = 0;       /* one control, one action: A takes it */
+    }
     if (scancode != 0) {
         for (b = 0; b < NBTN; b++) {
             for (s = 0; s < EIDOS_BIND_SLOTS; s++) {
@@ -1612,6 +1661,10 @@ int eidos_settings_set_pad(int button, int slot, int kind, int index)
         if (kind > EIDOS_PADBIND_AXIS_NEG || index < 0) {
             return -1;
         }
+        if (g_cur.ff_pad.kind == kind && g_cur.ff_pad.index == index) {
+            g_cur.ff_pad.kind = -1;     /* one control, one action */
+            g_cur.ff_pad.index = 0;
+        }
         for (b = 0; b < NBTN; b++) {
             for (s = 0; s < EIDOS_BIND_SLOTS; s++) {
                 if (g_cur.pad[b][s].kind == kind &&
@@ -1640,6 +1693,76 @@ void eidos_settings_reset_bindings(void)
 {
     ensure_init();
     model_reset_bindings(&g_cur);
+    if (g_plat != NULL) {
+        (void)apply_bindings();
+    }
+}
+
+int eidos_settings_get_fast_forward_key(void)
+{
+    ensure_init();
+    return g_cur.ff_key;
+}
+
+void eidos_settings_set_fast_forward_key(int scancode)
+{
+    int b, s;
+
+    ensure_init();
+    if (scancode < 0 || scancode >= SDL_SCANCODE_COUNT) {
+        return;
+    }
+    if (scancode == SDL_SCANCODE_ESCAPE || scancode == SDL_SCANCODE_F12) {
+        return;                 /* the platform layer's own keys */
+    }
+    if (scancode != 0) {
+        for (b = 0; b < NBTN; b++) {
+            for (s = 0; s < EIDOS_BIND_SLOTS; s++) {
+                if (g_cur.key[b][s] == scancode) {
+                    g_cur.key[b][s] = 0;    /* one control, one action */
+                }
+            }
+        }
+    }
+    g_cur.ff_key = scancode;
+    if (g_plat != NULL) {
+        (void)apply_bindings();
+    }
+}
+
+int eidos_settings_get_fast_forward_pad(int *kind, int *index)
+{
+    ensure_init();
+    if (kind != NULL) {
+        *kind = g_cur.ff_pad.kind;
+    }
+    if (index != NULL) {
+        *index = g_cur.ff_pad.index;
+    }
+    return 0;
+}
+
+void eidos_settings_set_fast_forward_pad(int kind, int index)
+{
+    int b, s;
+
+    ensure_init();
+    if (kind < 0 || kind > EIDOS_PADBIND_AXIS_NEG || index < 0) {
+        kind = -1;
+        index = 0;
+    } else {
+        for (b = 0; b < NBTN; b++) {
+            for (s = 0; s < EIDOS_BIND_SLOTS; s++) {
+                if (g_cur.pad[b][s].kind == kind &&
+                    g_cur.pad[b][s].index == index) {
+                    g_cur.pad[b][s].kind = -1;  /* one control, one action */
+                    g_cur.pad[b][s].index = 0;
+                }
+            }
+        }
+    }
+    g_cur.ff_pad.kind = kind;
+    g_cur.ff_pad.index = index;
     if (g_plat != NULL) {
         (void)apply_bindings();
     }
@@ -2047,6 +2170,31 @@ static void model_dedupe(Model *m)
     }
 }
 
+/*
+ * Fast forward's controls are not DS buttons.  A file written before they
+ * existed lists the left trigger on L; the trigger runs fast forward now,
+ * so it is taken off every button.  A key that fast forward holds is taken
+ * off the buttons for the same reason: one control, one action.
+ */
+static void model_ff_migrate(Model *m)
+{
+    int b, s;
+
+    for (b = 0; b < NBTN; b++) {
+        for (s = 0; s < EIDOS_BIND_SLOTS; s++) {
+            if (m->ff_key > 0 && m->key[b][s] == m->ff_key) {
+                m->key[b][s] = 0;
+            }
+            if (m->ff_pad.kind >= 0 &&
+                m->pad[b][s].kind == m->ff_pad.kind &&
+                m->pad[b][s].index == m->ff_pad.index) {
+                m->pad[b][s].kind = -1;
+                m->pad[b][s].index = 0;
+            }
+        }
+    }
+}
+
 static void parse_file(FILE *fp, Model *m)
 {
     char line[2048];
@@ -2170,6 +2318,34 @@ static void parse_file(FILE *fp, Model *m)
         if (strcmp(section, "keys") == 0 || strcmp(section, "pad") == 0) {
             int b;
 
+            if (strcmp(key, "fastforward") == 0) {
+                /* Fast forward's own control, not a DS button. */
+                if (section[0] == 'p') {
+                    PadCtl c;
+
+                    if (*val == '\0') {
+                        m->ff_pad.kind = -1;
+                        m->ff_pad.index = 0;
+                    } else if (parse_pad_token(val, &c) == 0) {
+                        m->ff_pad = c;
+                    } else {
+                        fprintf(stderr, "eidos: settings.ini:%d: unknown pad "
+                                "control '%s' ignored\n", lineno, val);
+                    }
+                } else if (*val == '\0') {
+                    m->ff_key = 0;
+                } else {
+                    int sc = parse_key_token(val);
+
+                    if (sc != 0) {
+                        m->ff_key = sc;
+                    } else {
+                        fprintf(stderr, "eidos: settings.ini:%d: unknown or "
+                                "reserved key '%s' ignored\n", lineno, val);
+                    }
+                }
+                continue;
+            }
             found = 0;
             for (b = 0; b < NBTN; b++) {
                 if (strcmp(key, k_buttons[b].key) == 0) {
@@ -2254,6 +2430,18 @@ static int write_file(FILE *fp, const Model *m)
             }
             fprintf(fp, "\n");
         }
+        /* Fast forward's own control: not a DS button. */
+        fprintf(fp, "fastforward = ");
+        if (kind == 0) {
+            if (m->ff_key > 0) {
+                key_token(m->ff_key, tok, sizeof(tok));
+                fprintf(fp, "%s", tok);
+            }
+        } else if (m->ff_pad.kind >= 0) {
+            pad_token(&m->ff_pad, tok, sizeof(tok));
+            fprintf(fp, "%s", tok);
+        }
+        fprintf(fp, "\n");
     }
     /* The port's own network settings: the relay, the two ports and the
      * player's name. */
@@ -2307,6 +2495,7 @@ int eidos_settings_load(void)
     }
     parse_file(fp, &m);
     fclose(fp);
+    model_ff_migrate(&m);
     g_cur = g_saved = m;
     apply_input();
     apply_panel();

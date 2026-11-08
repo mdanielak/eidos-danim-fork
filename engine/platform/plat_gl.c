@@ -10,6 +10,8 @@
 #include <string.h>
 
 #include "plat_gl_int.h"
+#include "settings.h"
+#include "pixel_filter.h"
 
 static const char *k_vs =
     "#version 330 core\n"

@@ -81,12 +81,23 @@ Everything else is identified and `bw_rom_verdict` decides:
 
 | Verdict | When | The player is told |
 |---|---|---|
-| `OK` | the known good dump, or it trimmed of padding only | proceed |
+| `OK` | the known good dump, it trimmed of padding only, or a recorded patched image (below) | proceed |
 | `NOT_DS` | unknown game code and a wrong header checksum | not a DS cartridge image |
 | `OTHER_GAME` | a valid DS header, another game | the title and game code found, and what is needed |
 | `UNSUPPORTED` | Pokemon White, or Black of another region | which release it is, and that only IRBO is supported |
 | `DAMAGED` | Black with a wrong header checksum, or cut short by more than padding | dump the cartridge again (without trimming) |
 | `MODIFIED` | Black, whole, another SHA-1 | damaged, patched (a hack or a translation) or another revision; both hashes shown |
+
+A patched image that is recorded as such is `OK` too. There are two: Pokemon
+Black (USA/Europe) with the Polish translation pokebwpl 1.02
+(SHA-1 `922cab4195e41998dfb021a8bc950797796faf4a`), and the same translation
+with the JetBlack 1.7 content patch merged in at NitroFS file level
+(SHA-1 `5f4facc61a0461fbab277a3f5ea71389d5191a90`; JetBlack's xdelta targets
+the unpatched English image, so the merged build is exported instead). Their
+message and font files were rebuilt, so the images hash differently, while
+ARM9 and the overlays are the English cartridge's; the header checksum is
+checked as for any image, and the extraction reads each patch's own file
+table.
 
 A trimmed dump is accepted when padding it back with 0xFF to the capacity
 the header declares (byte 0x14) gives the known hash: trimmers cut only the

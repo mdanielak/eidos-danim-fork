@@ -203,7 +203,8 @@ use multiplayer for now (SPEC section 17).
   back at a load. `bw_mod_avatar_sweep` deletes these stale avatars (the
   hero's or heroine's sprite, no event, no hit checks, an object id outside
   the port's range) when a field first runs.
-- Fast forward (Tab) is off while a session is open (host or joiner).
+- Fast forward (Space, Tab or the pad's left trigger) is off while a
+  session is open (host or joiner); a toggle it had started is cleared.
 
 ## Events and the shared table (built)
 

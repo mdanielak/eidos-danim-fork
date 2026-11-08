@@ -147,6 +147,7 @@ typedef struct G3dSnapTex {
     u32 w, h;
     u8 *rgba;               /* owned copy, w*h*4 */
     u8 partial;             /* some texel's 5-bit alpha is 1..30          */
+    u8 sprite;              /* explicitly submitted battle effect sprite */
     u64 content;            /* what the texels were decoded from (hash),
                              * the same from frame to frame while the
                              * texture is; 0 when unknown              */

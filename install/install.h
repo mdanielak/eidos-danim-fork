@@ -131,8 +131,9 @@ typedef struct BwRomInfo {
 #define BW_BLACK_SIZE 268435456u
 
 /* Whether a ROM's SHA-1 is one of the known good dumps the port plays:
- * English Black, and the White and European cartridges it lays out as
- * English Black's (sdk/langmap.h). */
+ * English Black, the White and European cartridges it lays out as English
+ * Black's (sdk/langmap.h), and the recorded patched images (the Polish
+ * translation, ndsrom.c's KNOWN_DUMPS). */
 int bw_rom_known_sha1(const char *sha1_hex);
 
 /* The largest image identify and extract will open: twice the largest DS
@@ -170,7 +171,8 @@ int bw_rom_identify(const char *rom_path, BwRomInfo *info,
  */
 typedef enum BwRomVerdict {
     BW_VERDICT_OK = 0,      /* the known good dump of Pokemon Black, or it
-                               trimmed of padding only */
+                               trimmed of padding only, or a recorded patched
+                               image (the Polish translation) */
     BW_VERDICT_NOT_DS,      /* the header is not a DS header */
     BW_VERDICT_OTHER_GAME,  /* a DS game, not Pokemon Black */
     BW_VERDICT_UNSUPPORTED, /* Black or White of a region not played (Japan, Korea) */

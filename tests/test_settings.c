@@ -328,6 +328,32 @@ static void test_bindings(EidosPlatform *p)
     }
     /* Select has two keys by default. */
     BW_CHECK_EQ("select second key", eidos_settings_get_key(7, 1) != 0, 1);
+    /* Fast forward's own controls: Space and the left trigger, which is
+     * not on L any more. */
+    BW_CHECK_EQ("fast forward key", eidos_settings_get_fast_forward_key(),
+                SDL_SCANCODE_SPACE);
+    eidos_settings_get_fast_forward_pad(&kind, &index);
+    BW_CHECK_EQ("fast forward pad",
+                kind == EIDOS_PADBIND_AXIS_POS &&
+                index == SDL_GAMEPAD_AXIS_LEFT_TRIGGER, 1);
+    eidos_settings_get_pad(4, 0, &kind, &index);
+    BW_CHECK_EQ("L is the shoulder", kind == EIDOS_PADBIND_BUTTON &&
+                index == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, 1);
+    /* Speed 2x and press (hold) by default. */
+    BW_CHECK_EQ("fast forward speed default",
+                eidos_settings_get(EIDOS_OPT_FF_SPEED), 1);
+    BW_CHECK_EQ("fast forward mode default",
+                eidos_settings_get(EIDOS_OPT_FF_MODE), 0);
+    BW_CHECK_EQ("fast forward speed set",
+                eidos_settings_set(EIDOS_OPT_FF_SPEED, 2), 0);
+    BW_CHECK_EQ("fast forward speed 2.5x",
+                eidos_settings_get(EIDOS_OPT_FF_SPEED), 2);
+    BW_CHECK_EQ("fast forward mode set",
+                eidos_settings_set(EIDOS_OPT_FF_MODE, 1), 0);
+    BW_CHECK_EQ("fast forward mode toggle",
+                eidos_settings_get(EIDOS_OPT_FF_MODE), 1);
+    eidos_settings_set(EIDOS_OPT_FF_SPEED, 1);
+    eidos_settings_set(EIDOS_OPT_FF_MODE, 0);
 
     /* Conflict: binding Z (B) to A moves it. */
     BW_CHECK_EQ("B has Z", eidos_settings_get_key(1, 0), SDL_SCANCODE_Z);
@@ -460,6 +486,8 @@ static void test_file(void)
     eidos_settings_set(EIDOS_OPT_LAYOUT_SWAP, 1);
     eidos_settings_set(EIDOS_OPT_LAYOUT_GAP, 12);
     eidos_settings_set(EIDOS_OPT_SOUND_VOLUME, 35);
+    eidos_settings_set(EIDOS_OPT_FF_SPEED, 2);
+    eidos_settings_set(EIDOS_OPT_FF_MODE, 1);
     eidos_settings_set_key(0, -1, SDL_SCANCODE_J);
     eidos_settings_set_pad(2, 0, EIDOS_PADBIND_AXIS_POS, SDL_GAMEPAD_AXIS_RIGHTY);
     BW_CHECK_EQ("dirty", eidos_settings_dirty(), 1);
@@ -491,7 +519,7 @@ static void test_file(void)
     }
     fputs("# hi\n[Display]\nmode = Fullscreen\nresolution_3d = 99\n"
           "resolution = 4\nbogus = 1\n"
-          "[sound]\nvolume=70\n[keys]\na = Space\nb = Nonsense Key\n"
+          "[sound]\nvolume=70\n[keys]\na = J\nb = Nonsense Key\n"
           "[mystery]\nx=1\n[pad]\nup = dpup | lefty-\n", fp);
     fclose(fp);
     BW_CHECK_EQ("load edited", eidos_settings_load(), 0);
@@ -500,7 +528,7 @@ static void test_file(void)
     BW_CHECK_EQ("bad resolution keeps default (and the old key is dropped)",
                 eidos_settings_get(EIDOS_OPT_DISPLAY_RESOLUTION), 0);
     BW_CHECK_EQ("volume", eidos_settings_get(EIDOS_OPT_SOUND_VOLUME), 70);
-    BW_CHECK_EQ("a is Space", eidos_settings_get_key(0, 0), SDL_SCANCODE_SPACE);
+    BW_CHECK_EQ("a is J", eidos_settings_get_key(0, 0), SDL_SCANCODE_J);
     BW_CHECK_EQ("b emptied", eidos_settings_get_key(1, 0), 0);
     BW_CHECK_EQ("untouched button keeps default",
                 eidos_settings_get_key(2, 0), SDL_SCANCODE_S);
