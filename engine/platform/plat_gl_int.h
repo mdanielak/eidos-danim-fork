@@ -144,7 +144,7 @@ struct EidosGl {
     GLuint p3d;
     GLint u_mode, u_alpha5, u_tex3, u_texture, u_texsize3, u_wrap, u_alpharef,
           u_toon, u_highlight, u_toontab, u_front, u_back, u_wbuf, u_pass,
-          u_id, u_pixel_filter, u_is_hd;
+          u_id, u_pixel_filter;
     GLuint pedge;                  /* the edge-marking pass (0: unavailable) */
     GLint ue_col, ue_id, ue_dep, ue_step, ue_cid, ue_cdep, ue_edge, ue_variant;
     GLuint pfog;                   /* the fog pass (0: unavailable)          */
@@ -160,8 +160,7 @@ struct EidosGl {
     GLuint vbo3, vao3;
     GLuint *gtex;
     unsigned n_gtex, cap_gtex;
-    unsigned *gtex_key;
-    uint8_t *gtex_is_hd;            /* per GL texture: what it holds (w, h and
+    unsigned *gtex_key;            /* per GL texture: what it holds (w, h and
                                       a hash of the texels), so an unchanged
                                       texture is not uploaded again          */
     unsigned tex_serial;           /* snapshot whose textures are uploaded   */
