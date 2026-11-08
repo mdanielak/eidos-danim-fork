@@ -1,5 +1,30 @@
 <h1><img src="docs/banner.png" alt="eidos"></h1>
 
+# Eidos Danim Fork (Polskie wydanie + Wygładzanie sprite'ów DeSmuME-Style)
+
+Fork natywnego portu PC **Eidos** (bazowany na upstream **v0.2.4** z [Project-Holon/eidos](https://github.com/Project-Holon/eidos)), stworzony specjalnie dla polskiego projektu tłumaczenia **Pokémon Czarna Wersja (Pokemon JetBlack)**.
+
+---
+
+### Nowości i usprawnienia w tym fork-u:
+
+1. **Pełne spolszczenie interfejsu One-Screen UI:**
+   * Wszystkie ekrany natywnego interfejsu jednoekranowego Eidosa (Magazyn Pokémon / PC Box, Drużyna, Plecak, Menu, Dialogi, Karta Trenera, Pasek skrótów klawiszy) zostały w 100% spolszczone zgodnie z oficjalną polską terminologią Pokémon (zgodność ze standardem *Brilliant Diamond / Shining Pearl*).
+   * Spolszczenie nazw typów Pokémonów (`OGNISTY`, `WODNY`, `MROCZNY`, `WALCZĄCY` itd.), statusów oraz komunikatów akcji.
+   * Automatyczna aktywacja polskiego interfejsu dla polskiego ROM-u.
+
+2. **Zaawansowane wygładzanie sprite'ów i tekstur (DeSmuME-Style):**
+   * Eliminacja twardych, kwadratowych pikseli DS-a na sprite'ach postaci, NPC, Pokémonów oraz interfejsu.
+   * **Tryb `light`:** interpolacja Hermite / Smooth Bilinear (dokładnie jak filtr *Smooth / Bilinear* w emulatorze DeSmuME) – czyste wygładzenie krawędzi bez utraty ostrości i bez rozmycia.
+   * **Tryb `strong`:** rekonstrukcja Scale3x z 4-krotnym antyaliasingiem krawędzi (efekt czystej grafiki wektorowej).
+   * **Świat 3D:** pełna obsługa zapętlania współrzędnych tekstur 3D (`pixel_sample_wrap`), dzięki czemu filtry działają na całym otoczeniu gry (ściany, podłogi, drogi, modele).
+   * Przełączanie w locie w menu: **Settings > Display > Pixel art filter** (*none* / *light* / *strong*).
+
+3. **Synchronizacja z Upstream v0.2.4:**
+   * Zawiera wszystkie najnowsze poprawki stabilności, renderer OpenGL oraz optymalizacje pamięci z głównego repozytorium.
+
+---
+
 A native PC port of Pokémon Black, built from the
 [aletheia](https://github.com/Project-Holon/aletheia) decompilation.
 
