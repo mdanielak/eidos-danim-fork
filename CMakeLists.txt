@@ -1132,6 +1132,7 @@ if(EIDOS_SDL_FOUND)
         ${CMAKE_CURRENT_SOURCE_DIR}/engine/platform/plat_replace.c
         ${CMAKE_CURRENT_SOURCE_DIR}/engine/platform/plat_gl.c
         ${CMAKE_CURRENT_SOURCE_DIR}/engine/platform/plat_gl3d.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/engine/platform/hd_textures.c
         ${CMAKE_CURRENT_SOURCE_DIR}/engine/platform/plat_gl2d.c
         ${CMAKE_CURRENT_SOURCE_DIR}/engine/platform/plat_gl_view.c
         ${CMAKE_CURRENT_SOURCE_DIR}/engine/platform/plat_gl_ops.c

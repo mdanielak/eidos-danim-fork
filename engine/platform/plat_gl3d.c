@@ -61,6 +61,7 @@
 #include "prof.h"
 #include "settings.h"
 #include "pixel_filter.h"
+#include "hd_textures.h"
 
 #define FLOATS_PER_VERTEX 9u
 
@@ -99,6 +100,7 @@ static const char *k_fs3 =
     "uniform int u_wbuf;\n"
     "uniform int u_pass;\n"
     "uniform int pixel_filter;\n"
+    "uniform int u_is_hd;\n"
     PIXEL_FILTER_GLSL
     "int wrapc(int v, int size, int rep, int flip) {\n"
     "    if (size <= 0) { return 0; }\n"
@@ -134,22 +136,28 @@ static const char *k_fs3 =
     "    int a5 = u_alpha5;\n"
     "    ivec3 col = c;\n"
     "    if (u_tex == 1) {\n"
-    "        int x = wrapc(int(floor(v_st.x / 16.0)), u_texsize.x, u_wrap.x, u_wrap.z);\n"
-    "        int y = wrapc(int(floor(v_st.y / 16.0)), u_texsize.y, u_wrap.y, u_wrap.w);\n"
-    "        ivec4 tc = ivec4(texelFetch(u_texture, ivec2(x, y), 0) * 255.0 + 0.5);\n"
-    "        if (pixel_filter != 0 && u_wrap.x == 0 && u_wrap.y == 0) {\n"
-    "            vec2 uv = v_st / 16.0;\n"
-    "            vec4 sampled = pixel_sample(u_texture, uv, u_texsize, pixel_filter);\n"
-    "            if (pixel_filter == 2 && max(fwidth(uv).x, fwidth(uv).y) < 1.0) {\n"
-    "                vec2 dx = dFdx(uv) * 0.25, dy = dFdy(uv) * 0.25;\n"
-    "                vec4 a = pf_premul(pixel_sample(u_texture, uv-dx-dy, u_texsize, 2));\n"
-    "                vec4 b = pf_premul(pixel_sample(u_texture, uv+dx-dy, u_texsize, 2));\n"
-    "                vec4 c = pf_premul(pixel_sample(u_texture, uv-dx+dy, u_texsize, 2));\n"
-    "                vec4 d = pf_premul(pixel_sample(u_texture, uv+dx+dy, u_texsize, 2));\n"
-    "                vec4 avg = (a+b+c+d) * 0.25;\n"
-    "                sampled = avg.a > 0.0 ? vec4(avg.rgb / avg.a, avg.a) : vec4(0.0);\n"
+    "        ivec4 tc;\n"
+    "        if (u_is_hd == 1) {\n"
+    "            vec2 uv = (v_st / 16.0) / vec2(u_texsize);\n"
+    "            tc = ivec4(texture(u_texture, uv) * 255.0 + 0.5);\n"
+    "        } else {\n"
+    "            int x = wrapc(int(floor(v_st.x / 16.0)), u_texsize.x, u_wrap.x, u_wrap.z);\n"
+    "            int y = wrapc(int(floor(v_st.y / 16.0)), u_texsize.y, u_wrap.y, u_wrap.w);\n"
+    "            tc = ivec4(texelFetch(u_texture, ivec2(x, y), 0) * 255.0 + 0.5);\n"
+    "            if (pixel_filter != 0 && u_wrap.x == 0 && u_wrap.y == 0) {\n"
+    "                vec2 uv = v_st / 16.0;\n"
+    "                vec4 sampled = pixel_sample(u_texture, uv, u_texsize, pixel_filter);\n"
+    "                if (pixel_filter == 2 && max(fwidth(uv).x, fwidth(uv).y) < 1.0) {\n"
+    "                    vec2 dx = dFdx(uv) * 0.25, dy = dFdy(uv) * 0.25;\n"
+    "                    vec4 a = pf_premul(pixel_sample(u_texture, uv-dx-dy, u_texsize, 2));\n"
+    "                    vec4 b = pf_premul(pixel_sample(u_texture, uv+dx-dy, u_texsize, 2));\n"
+    "                    vec4 c = pf_premul(pixel_sample(u_texture, uv-dx+dy, u_texsize, 2));\n"
+    "                    vec4 d = pf_premul(pixel_sample(u_texture, uv+dx+dy, u_texsize, 2));\n"
+    "                    vec4 avg = (a+b+c+d) * 0.25;\n"
+    "                    sampled = avg.a > 0.0 ? vec4(avg.rgb / avg.a, avg.a) : vec4(0.0);\n"
+    "                }\n"
+    "                tc = ivec4(sampled * 255.0 + 0.5);\n"
     "            }\n"
-    "            tc = ivec4(sampled * 255.0 + 0.5);\n"
     "        }\n"
     "        if (u_mode == 1) {\n"
     "            int ta = tc.a >> 3;\n"
@@ -1281,6 +1289,7 @@ int eidos_gl3d_init(EidosGl *g)
     LOC(u_texture, "u_texture");
     LOC(u_texsize3, "u_texsize");
     LOC(u_pixel_filter, "pixel_filter");
+    LOC(u_is_hd, "u_is_hd");
     LOC(u_wrap, "u_wrap");
     LOC(u_alpharef, "u_alpharef");
     LOC(u_toon, "u_toon");
@@ -1406,6 +1415,7 @@ void eidos_gl3d_destroy(EidosGl *g)
     }
     free(g->gtex);
     free(g->gtex_key);
+    free(g->gtex_is_hd);
     free(g->vtx);
 }
 
@@ -1715,6 +1725,7 @@ static void draw_run(EidosGl *g, const G3dSnapshot *s, const Gl3dRun *d,
     g->glUniform1i(g->u_pixel_filter,
                    d->textured && s->tex[d->slot].sprite
                        ? eidos_settings_get(EIDOS_OPT_PIXEL_FILTER) : 0);
+    g->glUniform1i(g->u_is_hd, d->textured && d->slot >= 0 ? (GLint)g->gtex_is_hd[d->slot] : 0);
     if (d->textured) {
         if (*bound_tex != d->slot) {
             glBindTexture(GL_TEXTURE_2D, g->gtex[d->slot]);
@@ -1796,9 +1807,15 @@ static int render_into(EidosGl *g, GlFb *fb, const G3dSnapshot *s, int w, int h)
                 return -1;
             }
             g->gtex_key = k;
+            uint8_t *hd = (uint8_t *)realloc(g->gtex_is_hd, (size_t)c * sizeof(*hd));
+            if (hd == NULL) {
+                return -1;
+            }
+            g->gtex_is_hd = hd;
             g->cap_gtex = c;
         }
         g->gtex_key[g->n_gtex] = 0;
+        g->gtex_is_hd[g->n_gtex] = 0;
         glGenTextures(1, &g->gtex[g->n_gtex]);
         glBindTexture(GL_TEXTURE_2D, g->gtex[g->n_gtex]);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
@@ -1822,9 +1839,24 @@ static int render_into(EidosGl *g, GlFb *fb, const G3dSnapshot *s, int w, int h)
             }
             g->gtex_key[i] = key;
             glBindTexture(GL_TEXTURE_2D, g->gtex[i]);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, (GLsizei)s->tex[i].w,
-                         (GLsizei)s->tex[i].h, 0, GL_RGBA, GL_UNSIGNED_BYTE,
-                         s->tex[i].rgba);
+            uint64_t hash = hd_textures_calc_hash(s->tex[i].w, s->tex[i].h, s->tex[i].rgba);
+            int hd_w = 0, hd_h = 0;
+            uint8_t *hd_data = hd_textures_load(hash, &hd_w, &hd_h);
+            if (hd_data != NULL) {
+                g->gtex_is_hd[i] = 1;
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, hd_w, hd_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, hd_data);
+                free(hd_data);
+            } else {
+                g->gtex_is_hd[i] = 0;
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, (GLsizei)s->tex[i].w,
+                             (GLsizei)s->tex[i].h, 0, GL_RGBA, GL_UNSIGNED_BYTE,
+                             s->tex[i].rgba);
+                hd_textures_dump(hash, s->tex[i].w, s->tex[i].h, s->tex[i].rgba);
+            }
         }
         g->tex_serial = s->serial;
         g->tex_serial_valid = 1;
@@ -2020,7 +2052,7 @@ static int render_into(EidosGl *g, GlFb *fb, const G3dSnapshot *s, int w, int h)
                                                 | (G3D_TEX_FLIP_S(ti) << 2) | (G3D_TEX_FLIP_T(ti) << 3)) : 0;
                 cur.id = (int)G3D_ATTR_ID(attr);
                 cur.two_pass = a5 >= 31u && cur.textured &&
-                    (s->tex[slot].partial ||
+                    (s->tex[slot].partial || (slot >= 0 && g->gtex_is_hd[slot]) ||
                      (s->tex[slot].sprite && eidos_settings_get(EIDOS_OPT_PIXEL_FILTER) != 0 &&
                       (cur.wrap & 3) == 0));
                 cur.fog = G3D_ATTR_FOG(attr) != 0;
