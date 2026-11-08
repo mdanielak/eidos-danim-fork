@@ -102,7 +102,7 @@ static const EidosOption k_options[EIDOS_OPT_COUNT] = {
     { "Controls", "fastforward_mode", "Fast forward mode",
       EIDOS_OPTKIND_CHOICE, 0, 1, 1, 0, k_ff_modes, "", 0, NULL },
     { "Display", "pixel_filter", "Pixel art filter",
-      EIDOS_OPTKIND_CHOICE, 0, 2, 1, 0, k_pixel_filters, "", 0, NULL },
+      EIDOS_OPTKIND_CHOICE, 0, 2, 1, 1, k_pixel_filters, "", 0, NULL },
 };
 
 /* sdk/field_fade.c reads this option by number */

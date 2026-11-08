@@ -107,14 +107,14 @@ struct EidosGl {
     GLuint vao;
     GLuint quad_vbo;               /* the quad's corners, where a shader
                                       cannot use gl_VertexID (the Vita) */
-    GLint u_rect, u_tex, u_texsize, u_dstsize;
+    GLint u_rect, u_tex, u_texsize, u_dstsize, u_pixel_filter_2d;
     GLuint tex[2];
     int tw[2], th[2];
 
     /* the 3D composite (a screen whose 3D layer the GPU draws) */
     GLuint prog3;
     GLint u3_rect, u3_tex, u3_behind, u3_g3d, u3_texsize, u3_dstsize,
-          u3_bmode, u3_bfac, u3_dil, u3_zero, u3_hasz, u3_sent;
+          u3_bmode, u3_bfac, u3_dil, u3_zero, u3_hasz, u3_sent, u3_pixel_filter;
     int s3d;                       /* screen index, -1 none                */
     int s3d2;                      /* the screen whose 3D the 2D shader
                                       composes (phase 3), -1 none          */

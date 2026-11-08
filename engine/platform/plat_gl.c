@@ -108,7 +108,24 @@ static const char *k_vs =
  * in the neighbour.  Below 1:1 it is plain linear.
  */
 #define SHARP_FN \
+    "uniform int pixel_filter;\n" \
+    PIXEL_FILTER_GLSL \
     "vec3 sharp(sampler2D s, vec2 uv, vec2 texsize, vec2 dstsize) {\n" \
+    "    if (pixel_filter == 1) {\n" \
+    "        vec2 t = uv * texsize - 0.5;\n" \
+    "        vec2 f = fract(t);\n" \
+    "        f = f * f * (3.0 - 2.0 * f);\n" \
+    "        vec2 p = (floor(t) + 0.5 + f) / texsize;\n" \
+    "        return texture(s, p).rgb;\n" \
+    "    } else if (pixel_filter == 2) {\n" \
+    "        vec2 p = uv * texsize;\n" \
+    "        vec2 dx = dFdx(p) * 0.25, dy = dFdy(p) * 0.25;\n" \
+    "        vec4 a = pixel_sample(s, p - dx - dy, ivec2(texsize), 2);\n" \
+    "        vec4 b = pixel_sample(s, p + dx - dy, ivec2(texsize), 2);\n" \
+    "        vec4 c = pixel_sample(s, p - dx + dy, ivec2(texsize), 2);\n" \
+    "        vec4 d = pixel_sample(s, p + dx + dy, ivec2(texsize), 2);\n" \
+    "        return ((a + b + c + d) * 0.25).rgb;\n" \
+    "    }\n" \
     "    vec2 t = uv * texsize;\n" \
     "    vec2 sc = dstsize / texsize;\n" \
     "    if (sc.x >= 1.0 && all(equal(sc, floor(sc))) && sc.x == sc.y)\n" \
@@ -444,7 +461,7 @@ static struct {
     SDL_Rect ds;                   /* the DS screen's rectangle in the window */
     GLuint progw, progb, progu;
     GLint w_tex, w_behind, w_g3d, w_zero, w_texsize, w_dsr, w_win, w_bmode,
-          w_dil, w_hasz, w_hide2d, w_crop, w_bfac, w_sent, w_rect, w_bd, w_held, w_under, w_vpy;
+          w_dil, w_hasz, w_hide2d, w_crop, w_bfac, w_sent, w_rect, w_bd, w_held, w_under, w_vpy, w_pixel_filter;
     float bd[3];                   /* the backdrop colour beyond the DS screen */
     GLint b_src, b_win, b_dir, b_tint, b_rect;
     GLint u_ctex, u_rect;
@@ -791,6 +808,7 @@ EidosGl *eidos_gl_create(SDL_Window *window)
     g->u_tex = g->glGetUniformLocation(g->prog, "tex");
     g->u_texsize = g->glGetUniformLocation(g->prog, "texsize");
     g->u_dstsize = g->glGetUniformLocation(g->prog, "dstsize");
+    g->u_pixel_filter_2d = g->glGetUniformLocation(g->prog, "pixel_filter");
     eidos_gl_quad_vao(g, &g->vao);
     glGenTextures(2, g->tex);
     for (i = 0; i < 2; i++) {
@@ -841,6 +859,7 @@ EidosGl *eidos_gl_create(SDL_Window *window)
         g->u3_zero = g->glGetUniformLocation(g->prog3, "zero");
         g->u3_hasz = g->glGetUniformLocation(g->prog3, "hasz");
         g->u3_sent = g->glGetUniformLocation(g->prog3, "sent");
+        g->u3_pixel_filter = g->glGetUniformLocation(g->prog3, "pixel_filter");
         if (eidos_gl3d_init(g) != 0) {
             g->have3d = 0;
         }
@@ -901,6 +920,7 @@ EidosGl *eidos_gl_create(SDL_Window *window)
         g_one.w_vpy = g->glGetUniformLocation(g_one.progw, "vpy");
         g_one.w_bfac = g->glGetUniformLocation(g_one.progw, "bfac");
         g_one.w_sent = g->glGetUniformLocation(g_one.progw, "sent");
+        g_one.w_pixel_filter = g->glGetUniformLocation(g_one.progw, "pixel_filter");
     }
     g_one.progb = eidos_gl_compile_program(g, k_vs, k_fsb);
     if (g_one.progb != 0) {
@@ -1258,6 +1278,9 @@ int eidos_gl_capture(EidosGl *g, const unsigned char *a2d,
     g->glUniform1f(g->u3_bfac, 0.f);
     g->glUniform1i(g->u3_dil, 1);
     g->glUniform1i(g->u3_hasz, 0);
+    if (g->u3_pixel_filter >= 0) {
+        g->glUniform1i(g->u3_pixel_filter, eidos_settings_get(EIDOS_OPT_PIXEL_FILTER));
+    }
     g->glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, g->cap_src[1]);
     g->glActiveTexture(GL_TEXTURE2);
@@ -1364,6 +1387,9 @@ static void draw_frame(EidosGl *g, int out_w, int out_h, const SDL_Rect dst[2])
                 g->glUniform1i(g->u3_hasz, g->has_zero);
                 g->glUniform3fv(g->u3_sent, 1, sent);
             }
+            if (g->u3_pixel_filter >= 0) {
+                g->glUniform1i(g->u3_pixel_filter, eidos_settings_get(EIDOS_OPT_PIXEL_FILTER));
+            }
             g->glActiveTexture(GL_TEXTURE3);
             glBindTexture(GL_TEXTURE_2D, g->zero_tex);
             g->glActiveTexture(GL_TEXTURE1);
@@ -1377,6 +1403,9 @@ static void draw_frame(EidosGl *g, int out_w, int out_h, const SDL_Rect dst[2])
             g->glUniform4f(g->u_rect, x0, y0, x1, y1);
             g->glUniform2f(g->u_texsize, (float)g->tw[i], (float)g->th[i]);
             g->glUniform2f(g->u_dstsize, (float)dst[i].w, (float)dst[i].h);
+            if (g->u_pixel_filter_2d >= 0) {
+                g->glUniform1i(g->u_pixel_filter_2d, eidos_settings_get(EIDOS_OPT_PIXEL_FILTER));
+            }
         }
         glBindTexture(GL_TEXTURE_2D, g->tex[i]);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
@@ -1659,6 +1688,9 @@ static void one_world(EidosGl *g, int out_w, int out_h, const SDL_Rect dst[2])
         g->glUniform1i(g_one.w_held, 4);
         g->glUniform1i(g_one.w_under, g_one.under && frozen && g_one.frozen != 0);
         g->glUniform1f(g_one.w_vpy, (float)g_vp_y);
+        if (g_one.w_pixel_filter >= 0) {
+            g->glUniform1i(g_one.w_pixel_filter, eidos_settings_get(EIDOS_OPT_PIXEL_FILTER));
+        }
         g->glActiveTexture(GL_TEXTURE4);
         glBindTexture(GL_TEXTURE_2D, g_one.frozen != 0 ? g_one.frozen : g->behind_tex);
         g->glActiveTexture(GL_TEXTURE3);

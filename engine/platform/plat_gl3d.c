@@ -144,15 +144,15 @@ static const char *k_fs3 =
     "            int x = wrapc(int(floor(v_st.x / 16.0)), u_texsize.x, u_wrap.x, u_wrap.z);\n"
     "            int y = wrapc(int(floor(v_st.y / 16.0)), u_texsize.y, u_wrap.y, u_wrap.w);\n"
     "            tc = ivec4(texelFetch(u_texture, ivec2(x, y), 0) * 255.0 + 0.5);\n"
-    "            if (pixel_filter != 0 && u_wrap.x == 0 && u_wrap.y == 0) {\n"
+    "            if (pixel_filter != 0) {\n"
     "                vec2 uv = v_st / 16.0;\n"
-    "                vec4 sampled = pixel_sample(u_texture, uv, u_texsize, pixel_filter);\n"
+    "                vec4 sampled = pixel_sample_wrap(u_texture, uv, u_texsize, u_wrap, pixel_filter);\n"
     "                if (pixel_filter == 2 && max(fwidth(uv).x, fwidth(uv).y) < 1.0) {\n"
     "                    vec2 dx = dFdx(uv) * 0.25, dy = dFdy(uv) * 0.25;\n"
-    "                    vec4 a = pf_premul(pixel_sample(u_texture, uv-dx-dy, u_texsize, 2));\n"
-    "                    vec4 b = pf_premul(pixel_sample(u_texture, uv+dx-dy, u_texsize, 2));\n"
-    "                    vec4 c = pf_premul(pixel_sample(u_texture, uv-dx+dy, u_texsize, 2));\n"
-    "                    vec4 d = pf_premul(pixel_sample(u_texture, uv+dx+dy, u_texsize, 2));\n"
+    "                    vec4 a = pf_premul(pixel_sample_wrap(u_texture, uv-dx-dy, u_texsize, u_wrap, 2));\n"
+    "                    vec4 b = pf_premul(pixel_sample_wrap(u_texture, uv+dx-dy, u_texsize, u_wrap, 2));\n"
+    "                    vec4 c = pf_premul(pixel_sample_wrap(u_texture, uv-dx+dy, u_texsize, u_wrap, 2));\n"
+    "                    vec4 d = pf_premul(pixel_sample_wrap(u_texture, uv+dx+dy, u_texsize, u_wrap, 2));\n"
     "                    vec4 avg = (a+b+c+d) * 0.25;\n"
     "                    sampled = avg.a > 0.0 ? vec4(avg.rgb / avg.a, avg.a) : vec4(0.0);\n"
     "                }\n"
@@ -1723,7 +1723,7 @@ static void draw_run(EidosGl *g, const G3dSnapshot *s, const Gl3dRun *d,
     g->glUniform1i(g->u_front, (GLint)d->front);
     g->glUniform1i(g->u_back, (GLint)d->back);
     g->glUniform1i(g->u_pixel_filter,
-                   d->textured && s->tex[d->slot].sprite
+                   d->textured
                        ? eidos_settings_get(EIDOS_OPT_PIXEL_FILTER) : 0);
     g->glUniform1i(g->u_is_hd, d->textured && d->slot >= 0 ? (GLint)g->gtex_is_hd[d->slot] : 0);
     if (d->textured) {
