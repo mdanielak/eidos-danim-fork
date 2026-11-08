@@ -47,8 +47,10 @@ def main():
         if not line or line.startswith('#'):
             continue
         cells = line.split('\t')
-        if len(cells) != 5:
-            raise SystemExit('%s:%d: %d columns, want 5' % (SRC, n, len(cells)))
+        if len(cells) < 5 or len(cells) > 6:
+            raise SystemExit('%s:%d: %d columns, want 5 or 6' % (SRC, n, len(cells)))
+        while len(cells) < 6:
+            cells.append('')
         if cells[0] in seen:
             raise SystemExit('%s:%d: %r twice' % (SRC, n, cells[0]))
         seen.add(cells[0])

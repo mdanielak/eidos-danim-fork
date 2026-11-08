@@ -24,7 +24,7 @@
 typedef struct UiLangRow {
     u32 hash;                   /* FNV-1a of the English                    */
     const char *en;
-    const char *tr[4];          /* French, German, Italian, Spanish; NULL:
+    const char *tr[5];          /* French, German, Italian, Spanish, Polish; NULL:
                                    the English                              */
 } UiLangRow;
 
@@ -35,8 +35,9 @@ typedef struct UiLangRow {
 #define LANG_ITALIAN 4
 #define LANG_GERMAN  5
 #define LANG_SPANISH 7
+#define LANG_POLISH  8
 
-static int g_col = -1;          /* the table's column, -1 English */
+static int g_col = 4;          /* default to Polish */
 
 void ui_lang_set(int game_language)
 {
@@ -45,7 +46,8 @@ void ui_lang_set(int game_language)
     case LANG_GERMAN:  g_col = 1; break;
     case LANG_ITALIAN: g_col = 2; break;
     case LANG_SPANISH: g_col = 3; break;
-    default:           g_col = -1; break;
+    case LANG_POLISH:  g_col = 4; break;
+    default:           g_col = 4; break; /* Polish for Black romhack */
     }
 }
 
