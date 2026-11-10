@@ -151,7 +151,6 @@ static const char *k_fs3 =
     "            }\n"
     "            tc = ivec4(sampled * 255.0 + 0.5);\n"
     "        }\n"
-    "    }\n"
     "        if (u_mode == 1) {\n"
     "            int ta = tc.a >> 3;\n"
     "            col = (tc.rgb * ta + c * (31 - ta)) / 31;\n"
