@@ -88,11 +88,15 @@ struct EidosPlatform {
      * the keyboard's letters are text, not buttons; the arrows still move */
     int text_mode;
     int pad_last;                   /* the last input came from a pad      */
+    unsigned long long pad_owns_until;  /* SDL_GetTicks: a pad is in use until
+                                       then, and the keyboard waits (see
+                                       PAD_OWNS_MS)                        */
     int touch_last;                 /* ... from a touch screen (no pad, no
                                        keys): the hints show the DS's own
                                        button letters, no brand            */
     int pad_type;                   /* that pad's SDL_GamepadType          */
     int face_default;               /* A, B, X, Y are on the shipped buttons */
+    int pad_custom;                 /* the player has bound the pad: no swap */
     char text[128];
     int text_len;
     int cap_state;                  /* EIDOS_CAPTURE_*                       */
@@ -242,6 +246,30 @@ static const EidosPadBinding k_default_padmap[] = {
 /* Half an axis's travel (SDL axes run -32768..32767, triggers 0..32767). */
 #define PAD_AXIS_THRESHOLD 16384
 
+/*
+ * One device at a time.  A pad in use owns the game's buttons: the keyboard's
+ * bindings reach the game again PAD_OWNS_MS after the pad's last button or
+ * stick movement.  Some systems send a pad's presses as keys as well as pad
+ * buttons: Steam's desktop layout (a Steam Deck running a program outside
+ * Steam's game mode turns the D-pad into the arrow keys and A into Enter),
+ * the Deck's own keyboard mode before Steam starts, remapping tools.  The two
+ * copies of one press arrive a few milliseconds apart, so the game saw the
+ * press, a release and the press again (#30, #32).  A player who puts the
+ * pad down and types gets the keyboard back at once after the pause.
+ */
+#define PAD_OWNS_MS 400
+
+u32 eidos_platform_merge_input(u32 keyboard, u32 pads, unsigned long long now_ms,
+                               unsigned long long *pad_owns_until)
+{
+    if (pads != 0u) {
+        /* held: the pad stays in use (a button held from before the window
+         * had the focus sends no event) */
+        *pad_owns_until = now_ms + PAD_OWNS_MS;
+    }
+    return pads | (now_ms < *pad_owns_until ? 0u : keyboard);
+}
+
 const EidosPadBinding *eidos_default_padmap(u32 *count)
 {
     if (count != NULL) {
@@ -347,7 +375,11 @@ static int pad_bottom_confirms(int type)
     }
 }
 
-/* Whether A, B, X and Y are bound exactly as shipped (k_default_padmap). */
+/* Whether A, B, X and Y are bound exactly as shipped (k_default_padmap).
+ * Once the player has bound the pad themselves (pad_custom) the bindings
+ * are theirs even when they equal the shipped ones: a player who set the
+ * DS's own layout by hand saw the swap come back with the last button
+ * they bound and undo A and B (#28). */
 static void note_face_default(EidosPlatform *p)
 {
     static const u32 face[4] = { EIDOS_PAD_A, EIDOS_PAD_B, EIDOS_PAD_X, EIDOS_PAD_Y };
@@ -357,6 +389,9 @@ static void note_face_default(EidosPlatform *p)
     u32 i;
 
     p->face_default = 0;
+    if (p->pad_custom) {
+        return;
+    }
     for (i = 0; i < p->padmap_count; i++) {
         for (f = 0; f < 4; f++) {
             if (p->padmap[i].button != face[f]) {
@@ -390,6 +425,15 @@ extern int eidos_ui_debug_battle_started(void) __attribute__((weak));
 int eidos_platform_face_swap(const EidosPlatform *p)
 {
     return p != NULL && p->face_default && pad_bottom_confirms(p->pad_type);
+}
+
+void eidos_platform_set_pad_custom(EidosPlatform *p, int on)
+{
+    if (p == NULL) {
+        return;
+    }
+    p->pad_custom = on != 0;
+    note_face_default(p);
 }
 
 /* Rebuilt from the whole table on every pump, as the keyboard is.         */
@@ -2142,6 +2186,11 @@ int eidos_platform_pump(EidosPlatform *p)
             p->ff_prev = 1;      /* preserve toggle, await a fresh press */
             break;
         case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+        case SDL_EVENT_GAMEPAD_BUTTON_UP:
+            p->pad_owns_until = SDL_GetTicks() + PAD_OWNS_MS;
+            if (ev.type == SDL_EVENT_GAMEPAD_BUTTON_UP) {
+                break;
+            }
             p->pad_last = 1;
             p->touch_last = 0;
             p->pad_type = (int)SDL_GetGamepadTypeForID(ev.gbutton.which);
@@ -2152,6 +2201,9 @@ int eidos_platform_pump(EidosPlatform *p)
             }
             break;
         case SDL_EVENT_GAMEPAD_AXIS_MOTION:
+            if (ev.gaxis.value >= PAD_AXIS_THRESHOLD || ev.gaxis.value <= -PAD_AXIS_THRESHOLD) {
+                p->pad_owns_until = SDL_GetTicks() + PAD_OWNS_MS;
+            }
             if (p->cap_state == EIDOS_CAPTURE_PENDING &&
                 (ev.gaxis.value >= PAD_AXIS_THRESHOLD ||
                  ev.gaxis.value <= -PAD_AXIS_THRESHOLD)) {
@@ -2211,8 +2263,12 @@ int eidos_platform_pump(EidosPlatform *p)
     }
 
     p->buttons_prev = p->buttons;
-    p->buttons = p->cap_state == EIDOS_CAPTURE_NONE
-                 ? read_keyboard(p) | read_pads(p) : 0u;
+    if (p->cap_state != EIDOS_CAPTURE_NONE) {
+        p->buttons = 0u;
+    } else {
+        p->buttons = eidos_platform_merge_input(read_keyboard(p), read_pads(p), SDL_GetTicks(),
+                                                &p->pad_owns_until);
+    }
     p->buttons_pressed = p->buttons & ~p->buttons_prev;
     read_stylus(p);
     ff_update_toggle(p);

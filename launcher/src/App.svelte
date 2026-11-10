@@ -13,9 +13,10 @@
     versionLabel,
     type Overview,
   } from "./lib/backend";
-  import { setTheme } from "morphe/theme";
+  import { setGameTheme } from "./lib/theme";
   import Icon from "./lib/Icon.svelte";
   import { MOBILE } from "./lib/platform";
+  import { startPadNav } from "./lib/padnav";
   import { checkForUpdate, updates } from "./lib/updater.svelte";
   import Home from "./pages/Home.svelte";
   import Profiles from "./pages/Profiles.svelte";
@@ -31,6 +32,7 @@
     ["mods", "Mods", "mods"],
     ["settings", "Settings", "settings"],
   ];
+  const shownPages = PAGES.filter(([id]) => !(MOBILE && id === "versions"));
   const KEY = "eidos-launcher.profile";
 
   let ov = $state<Overview | null>(null);
@@ -106,14 +108,25 @@
       }),
     ];
     takePendingJoin().then((code) => code && showInvite(code));
-    return () => stops.forEach((s) => s.then((stop) => stop()));
+    // a controller or the keyboard moves through the page (#31)
+    const stopNav = startPadNav({
+      page: (step) => {
+        const ids = shownPages.map(([id]) => id);
+        page = ids[(ids.indexOf(page) + step + ids.length) % ids.length];
+      },
+      back: () => (page = "home"),
+    });
+    return () => {
+      stops.forEach((s) => s.then((stop) => stop()));
+      stopNav();
+    };
   });
 
   const current = $derived(ov?.profiles.find((p) => p.name === selected));
 
   // Black or White, in the sidebar: it selects the Black or the White
   // profile, and the launcher's look follows the selected profile's game
-  // (any profile's).  Black is Reshiram's game, by day; White is Zekrom's,
+  // (any profile's) unless a fixed theme is chosen in Settings.  Black is Reshiram's game, by day; White is Zekrom's,
   // by night (the box legendaries, as morphe's themes name them).
   type Game = "black" | "white";
   const PROFILE_OF: Record<Game, string> = { black: "Black", white: "White" };
@@ -124,7 +137,7 @@
   const game = $derived<Game>(current?.game === "white" ? "white" : "black");
 
   $effect(() => {
-    if (current) setTheme(THEME_OF[game]);
+    if (current) setGameTheme(THEME_OF[game]);
   });
 
   async function loadGames() {
@@ -165,7 +178,7 @@
     <nav aria-label="Pages">
       <h1 class="brand">eidos</h1>
       <div class="links">
-        {#each PAGES.filter(([id]) => !(MOBILE && id === "versions")) as [id, label, icon]}
+        {#each shownPages as [id, label, icon]}
           <button class="row-item" aria-current={page === id} onclick={() => (page = id)}>
             <Icon name={icon} />
             <span>{label}</span>

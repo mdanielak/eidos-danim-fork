@@ -57,6 +57,7 @@
 
 #include "assets.h"
 #include "kit.h"
+#include "theme.h"
 #include "padglyph.h"
 
 /* ------------------------------------------------------------------ */
@@ -201,9 +202,13 @@ static void put(EidosUiCtx *c, int x, int y, u32 rgb, int a)
     blend_at(c->canvas, px, py, rgb, a);
 }
 
+/* Every colour drawn goes through the active theme's colour map
+ * (theme.h): fills, lines, shapes and text, never images. */
+#define tc(rgb) ui_theme_color(rgb)
+
 void ui_pixel(EidosUiCtx *c, int x, int y, u32 rgb, int a)
 {
-    put(c, x, y, rgb, a);
+    put(c, x, y, tc(rgb), a);
 }
 
 void ui_fill(EidosUiCtx *c, int x, int y, int w, int h, u32 rgb, int a)
@@ -211,6 +216,7 @@ void ui_fill(EidosUiCtx *c, int x, int y, int w, int h, u32 rgb, int a)
     /* the rectangle clipped once, then each pixel blended as put() would */
     int x0 = c->ox + x, y0 = c->oy + y, x1 = x0 + w, y1 = y0 + h, px, py;
 
+    rgb = tc(rgb);
     if (x0 < c->clip.x) x0 = c->clip.x;
     if (y0 < c->clip.y) y0 = c->clip.y;
     if (x1 > c->clip.x + c->clip.w) x1 = c->clip.x + c->clip.w;
@@ -255,6 +261,7 @@ void ui_line(EidosUiCtx *c, int x0, int y0, int x1, int y1, u32 rgb, int a)
     int sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
     int err;
 
+    rgb = tc(rgb);
     err = dx + dy;
     for (;;) {
         int e2;
@@ -290,6 +297,8 @@ void ui_ellipse(EidosUiCtx *c, int x, int y, int w, int h, u32 fill, u32 outline
 {
     int xx, yy;
 
+    fill = tc(fill);
+    outline = tc(outline);
     for (yy = 0; yy < h; yy++) {
         for (xx = 0; xx < w; xx++) {
             u32 col;
@@ -456,6 +465,19 @@ int ui_text(EidosUiCtx *c, int x, int y, const char *utf8, u32 color,
 
     if (utf8 == NULL) {
         return x;
+    }
+    {
+        /* the colour on the canvas under the text's middle, for the theme
+         * (a light theme's dark ink on a light fill, light on a dark one) */
+        int bx = c->ox + x + 2, by = c->oy + y + 6 * k;
+        u32 behind = 0;
+
+        if (bx >= 0 && by >= 0 && bx < c->canvas->w && by < c->canvas->h) {
+            const u8 *px = c->canvas->rgba + ((size_t)by * (size_t)c->canvas->w + (size_t)bx) * 4u;
+
+            behind = ((u32)px[0] << 16) | ((u32)px[1] << 8) | px[2];
+        }
+        ui_theme_text(&color, &shadow, behind);
     }
     if (k < 1) {
         k = 1;
@@ -657,7 +679,11 @@ static void panel_split(EidosUiCtx *c, int x, int y, int w, int h, int cut,
                         int split_x)
 {
     int xx, yy;
+    u32 ink = tc(UI_INK);
 
+    fill = tc(fill);
+    edge = tc(edge);
+    split_rgb = tc(split_rgb);
     for (yy = 0; yy < h; yy++) {
         /* the row's inner run (inside at inset 2: plain fill) is one
          * interval, every constraint being a bound on x; only the pixels
@@ -699,7 +725,7 @@ static void panel_split(EidosUiCtx *c, int x, int y, int w, int h, int cut,
                 continue;
             }
             if (!in_shape(xx, yy, w, h, cut, corner, 1)) {
-                col = UI_INK;
+                col = ink;
             } else if (!in_shape(xx, yy, w, h, cut, corner, 2)) {
                 col = edge;
             } else {
@@ -713,7 +739,7 @@ static void panel_split(EidosUiCtx *c, int x, int y, int w, int h, int cut,
     }
 }
 
-void ui_panel(EidosUiCtx *c, int x, int y, int w, int h, int cut, int corner,
+void ui_def_panel(EidosUiCtx *c, int x, int y, int w, int h, int cut, int corner,
               u32 fill, u32 edge, int a)
 {
     panel_split(c, x, y, w, h, cut, corner, fill, edge, a, UI_NONE, 0);
@@ -728,7 +754,7 @@ void ui_panel(EidosUiCtx *c, int x, int y, int w, int h, int cut, int corner,
 
 #define HEADER_CUT 6
 
-void ui_header(EidosUiCtx *c, int x, int y, int w, const char *title,
+void ui_def_header(EidosUiCtx *c, int x, int y, int w, const char *title,
                const char *sub, const char *right, u32 accent)
 {
     const int h = 22;
@@ -848,7 +874,7 @@ int ui_keycap_w(const char *label)
     return tw + 8 > 13 ? tw + 8 : 13;
 }
 
-int ui_keycap(EidosUiCtx *c, int x, int y, const char *label)
+int ui_def_keycap(EidosUiCtx *c, int x, int y, const char *label)
 {
     int tw;
 
@@ -885,7 +911,7 @@ int ui_safe_left(const EidosUiCtx *c)
     return c->ox <= 0 ? c->safe_l : 0;
 }
 
-int ui_hints(EidosUiCtx *c, int y, int w, const char *const *pairs, int n,
+int ui_def_hints(EidosUiCtx *c, int y, int w, const char *const *pairs, int n,
              const u32 *keys)
 {
     int bh, top = ui_bottom_bar(c, y, 17, &bh), lift = bh - 17, i, x = 6 + ui_safe_left(c);
@@ -929,7 +955,7 @@ int ui_hints(EidosUiCtx *c, int y, int w, const char *const *pairs, int n,
     return 17 + lift;
 }
 
-void ui_bar(EidosUiCtx *c, int x, int y, int w, int h, int num, int den)
+void ui_def_bar(EidosUiCtx *c, int x, int y, int w, int h, int num, int den)
 {
     u32 col, hi;
     int fw, r, g, b;
@@ -1043,7 +1069,7 @@ u32 ui_type_color(int type)
     return (type >= 0 && type < 18) ? k_type_color[type] : UI_EDGE2;
 }
 
-void ui_type_tag(EidosUiCtx *c, int x, int y, int w, int type)
+void ui_def_type_tag(EidosUiCtx *c, int x, int y, int w, int type)
 {
     u32 col = ui_type_color(type);
     u32 dark = ((col >> 17) & 0x7F) << 16 | ((col >> 9) & 0x7F) << 8 | ((col >> 1) & 0x7F);
@@ -1060,7 +1086,7 @@ static const u32 k_status_color[7] = {
     0xA040A0u, 0xE6BE1Eu, 0xE65A28u, 0x8C8C8Cu, 0x5AC8E6u, 0x961428u, 0xC83CC8u
 };
 
-void ui_status_badge(EidosUiCtx *c, int x, int y, int status)
+void ui_def_status_badge(EidosUiCtx *c, int x, int y, int status)
 {
     u32 col, dark;
     const char *name;
@@ -1079,7 +1105,7 @@ void ui_status_badge(EidosUiCtx *c, int x, int y, int status)
             (s32)dark, UI_FONT_SMALL, 1);
 }
 
-void ui_scrollbar(EidosUiCtx *c, int x, int y, int h, int first, int shown,
+void ui_def_scrollbar(EidosUiCtx *c, int x, int y, int h, int first, int shown,
                   int total, u32 accent)
 {
     int th, ty, track = h - 2;
@@ -1112,7 +1138,7 @@ void ui_scrollbar(EidosUiCtx *c, int x, int y, int h, int first, int shown,
 /* Rows, message, toast                                                */
 /* ------------------------------------------------------------------ */
 
-void ui_row(EidosUiCtx *c, int x, int y, int w, int h, int selected, int hover,
+void ui_def_row(EidosUiCtx *c, int x, int y, int w, int h, int selected, int hover,
             const UiTheme *t)
 {
     u32 fill = t->fill, edge = t->edge;
@@ -1126,14 +1152,14 @@ void ui_row(EidosUiCtx *c, int x, int y, int w, int h, int selected, int hover,
     ui_panel(c, x, y, w, h, CUT_DEF, 4, fill, edge, 255);
 }
 
-void ui_message(EidosUiCtx *c, int x, int y, int w, const char *utf8)
+void ui_def_message(EidosUiCtx *c, int x, int y, int w, const char *utf8)
 {
     ui_panel(c, x, y, w, 30, CUT_DEF, 6, UI_BODY, UI_EDGE, 215);
     ui_text(c, x + 10, y + ui_text_y(30, UI_FONT_LARGE), utf8, UI_WHITE, UI_EDGE,
             UI_FONT_LARGE, 1);
 }
 
-void ui_toast(EidosUiCtx *c, int x, int y, const char *utf8, const UiImage *icon)
+void ui_def_toast(EidosUiCtx *c, int x, int y, const char *utf8, const UiImage *icon)
 {
     int h = 22, tx = 8, w;
 
@@ -1150,7 +1176,7 @@ void ui_toast(EidosUiCtx *c, int x, int y, const char *utf8, const UiImage *icon
             UI_FONT_LARGE, 1);
 }
 
-void ui_cursor_corners(EidosUiCtx *c, int x, int y, int w, int h, u32 color)
+void ui_def_cursor_corners(EidosUiCtx *c, int x, int y, int w, int h, u32 color)
 {
     const int arm = 5;
     int i;
@@ -1175,7 +1201,7 @@ void ui_cursor_corners(EidosUiCtx *c, int x, int y, int w, int h, u32 color)
 /* Tabs and form controls                                              */
 /* ------------------------------------------------------------------ */
 
-int ui_tab(EidosUiCtx *c, int x, int y, const char *label, int selected,
+int ui_def_tab(EidosUiCtx *c, int x, int y, const char *label, int selected,
            u32 accent, u32 accent2)
 {
     int w = ui_text_w(label, UI_FONT_SMALL) + 16;
@@ -1188,7 +1214,7 @@ int ui_tab(EidosUiCtx *c, int x, int y, const char *label, int selected,
     return w;
 }
 
-void ui_pocket_tab(EidosUiCtx *c, int x, int y, int w, const char *label, int selected)
+void ui_def_pocket_tab(EidosUiCtx *c, int x, int y, int w, const char *label, int selected)
 {
     ui_panel(c, x, y, w, 18, CUT_DEF, 4, selected ? UI_PINK : 0x3C0A1Au,
              selected ? UI_WHITE : UI_RED, 255);
@@ -1196,14 +1222,14 @@ void ui_pocket_tab(EidosUiCtx *c, int x, int y, int w, const char *label, int se
             selected ? (s32)UI_PINK2 : (s32)UI_RED2, UI_FONT_LARGE, 1);
 }
 
-void ui_toggle(EidosUiCtx *c, int x, int y, int on, u32 accent)
+void ui_def_toggle(EidosUiCtx *c, int x, int y, int on, u32 accent)
 {
     ui_panel(c, x, y, 26, 12, CUT_DEF, 3, on ? UI_CYAN2 : UI_BODY2,
              on ? accent : UI_EDGE, 255);
     ui_fill(c, x + (on ? 15 : 3), y + 3, 8, 6, on ? UI_WHITE : UI_EDGE2, 255);
 }
 
-void ui_slider(EidosUiCtx *c, int x, int y, int w, int num, int den, u32 accent)
+void ui_def_slider(EidosUiCtx *c, int x, int y, int w, int num, int den, u32 accent)
 {
     int fx, i, yy;
 
@@ -1232,12 +1258,12 @@ void ui_slider(EidosUiCtx *c, int x, int y, int w, int num, int den, u32 accent)
 
         for (i = -half; i <= half; i++) {
             int edge = yy == 0 || yy >= 7 || i == -half || i == half || yy == 6;
-            put(c, x + fx + i, y + yy, edge ? UI_INK : UI_WHITE, 255);
+            put(c, x + fx + i, y + yy, tc(edge ? UI_INK : UI_WHITE), 255);
         }
     }
 }
 
-void ui_stepper(EidosUiCtx *c, int x, int y, int w, const char *value, u32 accent)
+void ui_def_stepper(EidosUiCtx *c, int x, int y, int w, const char *value, u32 accent)
 {
     int ty = ui_text_y(15, UI_FONT_LARGE);
 
@@ -1248,7 +1274,7 @@ void ui_stepper(EidosUiCtx *c, int x, int y, int w, const char *value, u32 accen
             UI_EDGE, UI_FONT_LARGE, 1);
 }
 
-void ui_field(EidosUiCtx *c, int x, int y, int w, const char *text, int room, u32 accent)
+void ui_def_field(EidosUiCtx *c, int x, int y, int w, const char *text, int room, u32 accent)
 {
     int i, ty = ui_text_y(18, UI_FONT_LARGE), tx;
 
@@ -1260,7 +1286,7 @@ void ui_field(EidosUiCtx *c, int x, int y, int w, const char *text, int room, u3
     }
 }
 
-void ui_key(EidosUiCtx *c, int x, int y, int w, const char *label, int selected, u32 accent)
+void ui_def_key(EidosUiCtx *c, int x, int y, int w, const char *label, int selected, u32 accent)
 {
     int tw = ui_text_w(label, UI_FONT_LARGE);
 
@@ -1286,7 +1312,7 @@ static void dialog_line(void *user, const char *s, int len)
     d->n++;
 }
 
-int ui_dialog(EidosUiCtx *c, int x, int y, int w, const char *msg,
+int ui_def_dialog(EidosUiCtx *c, int x, int y, int w, const char *msg,
               const char *const *choices, int n, int cur, u32 accent)
 {
     int lines = ui_wrap(msg, w - 20, UI_FONT_LARGE, NULL, NULL);
@@ -1315,7 +1341,7 @@ int ui_dialog(EidosUiCtx *c, int x, int y, int w, const char *msg,
     return h;
 }
 
-void ui_progress(EidosUiCtx *c, int x, int y, int w, int num, int den, u32 accent)
+void ui_def_progress(EidosUiCtx *c, int x, int y, int w, int num, int den, u32 accent)
 {
     int fw, i;
 
@@ -1333,7 +1359,7 @@ void ui_progress(EidosUiCtx *c, int x, int y, int w, int num, int den, u32 accen
     }
 }
 
-void ui_spinner(EidosUiCtx *c, int x, int y, int frame, u32 accent)
+void ui_def_spinner(EidosUiCtx *c, int x, int y, int frame, u32 accent)
 {
     static const int dx[8] = { 4, 3, 0, -3, -4, -3, 0, 3 };
     static const int dy[8] = { 0, 3, 4, 3, 0, -3, -4, -3 };
@@ -1346,7 +1372,7 @@ void ui_spinner(EidosUiCtx *c, int x, int y, int frame, u32 accent)
     }
 }
 
-void ui_page_dots(EidosUiCtx *c, int x, int y, int n, int cur, u32 accent)
+void ui_def_page_dots(EidosUiCtx *c, int x, int y, int n, int cur, u32 accent)
 {
     int i;
 
@@ -1376,12 +1402,12 @@ static void span_shape(EidosUiCtx *c, int x, int y, int rows, const int *l,
                        xx < l[yy - 1] || xx > r[yy - 1] || xx < l[yy + 1] ||
                        xx > r[yy + 1];
 
-            put(c, x + xx, y + yy, edge ? outline : fill, 255);
+            put(c, x + xx, y + yy, tc(edge ? outline : fill), 255);
         }
     }
 }
 
-void ui_target_chevron(EidosUiCtx *c, int x, int y, u32 color)
+void ui_def_target_chevron(EidosUiCtx *c, int x, int y, u32 color)
 {
     static const int l[7] = { 0, 1, 2, 3, 3, 4, 5 };
     int r[7], i;
@@ -1392,7 +1418,7 @@ void ui_target_chevron(EidosUiCtx *c, int x, int y, u32 color)
     span_shape(c, x, y, 7, l, r, color, UI_INK);
 }
 
-void ui_party_balls(EidosUiCtx *c, int x, int y, const u8 *states, int n)
+void ui_def_party_balls(EidosUiCtx *c, int x, int y, const u8 *states, int n)
 {
     int i;
 
@@ -1419,14 +1445,14 @@ void ui_party_balls(EidosUiCtx *c, int x, int y, const u8 *states, int n)
                 } else {
                     col = yy < 4 ? top : UI_WHITE;
                 }
-                put(c, bx + xx, y + yy, col, 255);
+                put(c, bx + xx, y + yy, tc(col), 255);
             }
         }
-        put(c, bx + 4, y + 4, UI_WHITE, 255);
+        put(c, bx + 4, y + 4, tc(UI_WHITE), 255);
     }
 }
 
-int ui_name_tag(EidosUiCtx *c, int x, int y, const char *name, u32 accent)
+int ui_def_name_tag(EidosUiCtx *c, int x, int y, const char *name, u32 accent)
 {
     int w = ui_text_w(name, UI_FONT_SMALL) + 12, i;
 
@@ -1439,7 +1465,7 @@ int ui_name_tag(EidosUiCtx *c, int x, int y, const char *name, u32 accent)
     return w;
 }
 
-void ui_category_icon(EidosUiCtx *c, int x, int y, int kind)
+void ui_def_category_icon(EidosUiCtx *c, int x, int y, int kind)
 {
     /* Stand-ins until the game's own three icons are read from its data. */
     u32 base = kind == 0 ? 0xC83C1Eu : kind == 1 ? 0x2846A0u : 0x6E6E6Eu;
@@ -1453,7 +1479,7 @@ void ui_category_icon(EidosUiCtx *c, int x, int y, int kind)
 
         for (yy = 0; yy < 7; yy++) {
             for (xx = l[yy]; xx <= r[yy]; xx++) {
-                put(c, x + xx + 1, y + yy + 2, 0xFFC83Cu, 255);
+                put(c, x + xx + 1, y + yy + 2, tc(0xFFC83Cu), 255);
             }
         }
     } else if (kind == 1) {
@@ -1465,7 +1491,7 @@ void ui_category_icon(EidosUiCtx *c, int x, int y, int kind)
     }
 }
 
-void ui_stat_row(EidosUiCtx *c, int x, int y, int w, const char *name, int value,
+void ui_def_stat_row(EidosUiCtx *c, int x, int y, int w, const char *name, int value,
                  int num, int den, u32 accent)
 {
     char v[16];
@@ -1501,7 +1527,7 @@ void ui_stat_row(EidosUiCtx *c, int x, int y, int w, const char *name, int value
     }
 }
 
-void ui_icon_well(EidosUiCtx *c, int x, int y, int size, const UiImage *icon, int selected)
+void ui_def_icon_well(EidosUiCtx *c, int x, int y, int size, const UiImage *icon, int selected)
 {
     ui_ellipse(c, x, y, size, size, UI_INK, UI_NONE, 255);
     ui_ellipse(c, x + 1, y + 1, size - 2, size - 2, selected ? UI_CYAN_EDGE : UI_EDGE2,
@@ -1512,7 +1538,7 @@ void ui_icon_well(EidosUiCtx *c, int x, int y, int size, const UiImage *icon, in
     }
 }
 
-void ui_gender(EidosUiCtx *c, int x, int y, int gender, int font)
+void ui_def_gender(EidosUiCtx *c, int x, int y, int gender, int font)
 {
     if (gender == 0) {
         ui_text(c, x, y, "\xE2\x99\x82", 0x63B4FFu, SHADOW_DARK, font, 1);
@@ -1525,7 +1551,7 @@ void ui_gender(EidosUiCtx *c, int x, int y, int gender, int font)
 /* Rows with content                                                   */
 /* ------------------------------------------------------------------ */
 
-void ui_menu_row(EidosUiCtx *c, int x, int y, int w, const char *label,
+void ui_def_menu_row(EidosUiCtx *c, int x, int y, int w, const char *label,
                  const UiImage *icon, int selected, int hover)
 {
     const int h = 26;
@@ -1544,7 +1570,7 @@ void ui_menu_row(EidosUiCtx *c, int x, int y, int w, const char *label,
             UI_FONT_LARGE, 1);
 }
 
-void ui_party_row(EidosUiCtx *c, int x, int y, int w, int slot, const char *name,
+void ui_def_party_row(EidosUiCtx *c, int x, int y, int w, int slot, const char *name,
                   int gender, int level, int hp, int maxhp, const UiImage *icon,
                   int selected)
 {
@@ -1625,7 +1651,7 @@ void ui_party_row(EidosUiCtx *c, int x, int y, int w, int slot, const char *name
     ui_text(c, x + w - 9 - hw, y + 16, hpn, UI_LIGHT, SHADOW_DARK, UI_FONT_SMALL, 1);
 }
 
-void ui_plate(EidosUiCtx *c, int x, int y, int w, const char *name, int gender,
+void ui_def_plate(EidosUiCtx *c, int x, int y, int w, const char *name, int gender,
               int level, int hp, int maxhp, int exp_num, int exp_den)
 {
     int player = exp_den > 0;
@@ -1684,7 +1710,7 @@ void ui_plate(EidosUiCtx *c, int x, int y, int w, const char *name, int gender,
 
 /* A plate's condition badge, left of its level (ui_plate's first row);
  * badge as ui_status_badge counts (-1: none). */
-void ui_plate_status(EidosUiCtx *c, int x, int y, int w, int level, int badge)
+void ui_def_plate_status(EidosUiCtx *c, int x, int y, int w, int level, int badge)
 {
     char lv[48];
     int tw, bw;
@@ -1701,7 +1727,7 @@ void ui_plate_status(EidosUiCtx *c, int x, int y, int w, int level, int badge)
     ui_status_badge(c, x + w - 10 - tw - 4 - bw, y + 3, badge);
 }
 
-void ui_cmd_button(EidosUiCtx *c, int x, int y, int w, int h, const char *label,
+void ui_def_cmd_button(EidosUiCtx *c, int x, int y, int w, int h, const char *label,
                    u32 color, int selected)
 {
     u32 dark = ((color >> 16) / 3) << 16 | (((color >> 8) & 255) / 3) << 8 | ((color & 255) / 3);
@@ -1725,7 +1751,7 @@ void ui_cmd_button(EidosUiCtx *c, int x, int y, int w, int h, const char *label,
             (s32)dark, UI_FONT_LARGE, 1);
 }
 
-void ui_move_row(EidosUiCtx *c, int x, int y, int w, int type, const char *name,
+void ui_def_move_row(EidosUiCtx *c, int x, int y, int w, int type, const char *name,
                  int pp, int maxpp, int selected)
 {
     const int h = 22;
@@ -1769,7 +1795,7 @@ void ui_move_row(EidosUiCtx *c, int x, int y, int w, int type, const char *name,
             UI_LIGHT, UI_EDGE, UI_FONT_SMALL, 1);
 }
 
-int ui_item_row(EidosUiCtx *c, int x, int y, int w, const UiImage *icon,
+int ui_def_item_row(EidosUiCtx *c, int x, int y, int w, const UiImage *icon,
                 const char *name, int count, int selected)
 {
     int h = 20, tx = 6;
@@ -1806,7 +1832,7 @@ int ui_item_row(EidosUiCtx *c, int x, int y, int w, const UiImage *icon,
     return h;
 }
 
-void ui_dex_row(EidosUiCtx *c, int x, int y, int w, int number, const char *name,
+void ui_def_dex_row(EidosUiCtx *c, int x, int y, int w, int number, const char *name,
                 int state, int selected)
 {
     char s[8];
@@ -1833,7 +1859,7 @@ void ui_dex_row(EidosUiCtx *c, int x, int y, int w, int number, const char *name
     }
 }
 
-void ui_info_row(EidosUiCtx *c, int x, int y, int w, const char *label, const char *value)
+void ui_def_info_row(EidosUiCtx *c, int x, int y, int w, const char *label, const char *value)
 {
     int ty = ui_text_y(15, UI_FONT_LARGE);
 

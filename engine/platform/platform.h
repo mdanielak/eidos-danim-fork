@@ -312,6 +312,12 @@ void eidos_platform_quit(EidosPlatform *p);
 int  eidos_platform_pump(EidosPlatform *p);
 /* The buttons currently held, as EIDOS_PAD_* bits. */
 u32  eidos_platform_buttons(const EidosPlatform *p);
+/* One device at a time (docs/input.md): the DS buttons of a pump from the
+ * keyboard's and the pads' words at now_ms.  A pad in use (a button held, or
+ * *pad_owns_until not yet reached) holds the keyboard back.  The platform
+ * calls it each pump; tests play sequences through it. */
+u32  eidos_platform_merge_input(u32 keyboard, u32 pads, unsigned long long now_ms,
+                                unsigned long long *pad_owns_until);
 
 /* The buttons that went down during the last pump (edge-triggered). */
 u32  eidos_platform_buttons_pressed(const EidosPlatform *p);
@@ -495,6 +501,9 @@ int  eidos_platform_pad_family(const EidosPlatform *p);
  * with its bottom button (Xbox, PlayStation): the shipped bindings then
  * read as A south, B east, X west, Y north. */
 int  eidos_platform_face_swap(const EidosPlatform *p);
+/* The player has bound the pad themselves (settings.ini [pad] custom): no
+ * swap from then on, even when the bindings equal the shipped ones. */
+void eidos_platform_set_pad_custom(EidosPlatform *p, int on);
 /* The 3D's outlines (EIDOS_OPT_OUTLINES: 0 off, 1 thin). */
 void eidos_platform_set_outlines(EidosPlatform *p, int mode);
 void eidos_platform_key_names(const EidosPlatform *p, const char *names[12]);

@@ -2,7 +2,7 @@
 
 # Eidos Danim Fork (Polskie wydanie + Wygładzanie sprite'ów DeSmuME-Style)
 
-Fork natywnego portu PC **Eidos** (bazowany na upstream **v0.2.4** z [Project-Holon/eidos](https://github.com/Project-Holon/eidos)), stworzony specjalnie dla polskiego projektu tłumaczenia **Pokémon Czarna Wersja (Pokemon JetBlack)**.
+Fork natywnego portu PC **Eidos** (zsynchronizowany z upstream **v0.2.5** z [Project-Holon/eidos](https://github.com/Project-Holon/eidos)), stworzony specjalnie dla polskiego projektu tłumaczenia **Pokémon Czarna Wersja (Pokemon JetBlack)**.
 
 ---
 
@@ -11,7 +11,7 @@ Fork natywnego portu PC **Eidos** (bazowany na upstream **v0.2.4** z [Project-Ho
 1. **Pełne spolszczenie interfejsu One-Screen UI:**
    * Wszystkie ekrany natywnego interfejsu jednoekranowego Eidosa (Magazyn Pokémon / PC Box, Drużyna, Plecak, Menu, Dialogi, Karta Trenera, Pasek skrótów klawiszy) zostały w 100% spolszczone zgodnie z oficjalną polską terminologią Pokémon (zgodność ze standardem *Brilliant Diamond / Shining Pearl*).
    * Spolszczenie nazw typów Pokémonów (`OGNISTY`, `WODNY`, `MROCZNY`, `WALCZĄCY` itd.), statusów oraz komunikatów akcji.
-   * Automatyczna aktywacja polskiego interfejsu dla polskiego ROM-u.
+   * Automatyczna aktywacja polskiego interfejsu dla polskiego ROM-u (`IRBO`).
 
 2. **Zaawansowane wygładzanie sprite'ów i tekstur (DeSmuME-Style):**
    * Eliminacja twardych, kwadratowych pikseli DS-a na sprite'ach postaci, NPC, Pokémonów oraz interfejsu.
@@ -20,177 +20,94 @@ Fork natywnego portu PC **Eidos** (bazowany na upstream **v0.2.4** z [Project-Ho
    * **Świat 3D:** pełna obsługa zapętlania współrzędnych tekstur 3D (`pixel_sample_wrap`), dzięki czemu filtry działają na całym otoczeniu gry (ściany, podłogi, drogi, modele).
    * Przełączanie w locie w menu: **Settings > Display > Pixel art filter** (*none* / *light* / *strong*).
 
-3. **Synchronizacja z Upstream v0.2.4:**
-   * Zawiera wszystkie najnowsze poprawki stabilności, renderer OpenGL oraz optymalizacje pamięci z głównego repozytorium.
+3. **Synchronizacja z Upstream v0.2.5:**
+   * Zawiera wszystkie najnowsze poprawki stabilności, renderer OpenGL, obsługę motywów One-screen (Remaster, Remix battle layout), poprawki nawigacji kontrolera/klawiatury, poprawki dla Steam Decka oraz optymalizacje pamięci z głównego repozytorium.
 
 ---
 
-A native PC port of Pokémon Black, built from the
-[aletheia](https://github.com/Project-Holon/aletheia) decompilation.
+A native port of Pokémon Black and White built on the [aletheia](https://github.com/Project-Holon/aletheia) decompilation. Rather than emulating the Nintendo DS, eidos compiles the decompiled C source directly to native code and loads assets from a user-supplied ROM.
+
+Supports Windows, macOS, Linux, Android, and iOS, with experimental builds for Nintendo Switch and PlayStation Vita.
 
 [![Discord](https://img.shields.io/badge/Discord-Join-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/Fpyemx4qp)
 
-> eidos is an unofficial fan project. It is not affiliated with or endorsed
-> by Nintendo, Game Freak, Creatures Inc. or The Pokémon Company. It contains
-> no game data: you need your own legally obtained copy of Pokémon Black or
-> White. Pokémon and Nintendo DS are trademarks of their respective owners.
-
-## Download
-
-[![Windows](https://img.shields.io/badge/Windows-Download-0078D6?style=for-the-badge&logo=windows11&logoColor=white)](https://github.com/Project-Holon/eidos/releases/latest/download/eidos-launcher-windows-setup.exe)
-[![macOS](https://img.shields.io/badge/macOS-Download-000000?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/Project-Holon/eidos/releases/latest/download/eidos-launcher-macos.dmg)
-[![Linux](https://img.shields.io/badge/Linux-Download-FCC624?style=for-the-badge&logo=linux&logoColor=black)](https://github.com/Project-Holon/eidos/releases/latest/download/eidos-launcher-linux-x86_64.AppImage)
+[![Windows](https://img.shields.io/badge/Windows-Download-0078D4?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/Project-Holon/eidos/releases/latest/download/eidos-windows.zip)
+[![macOS](https://img.shields.io/badge/macOS-Download-000000?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/Project-Holon/eidos/releases/latest/download/eidos-macos.dmg)
+[![Linux](https://img.shields.io/badge/Linux-Download-FCC624?style=for-the-badge&logo=linux&logoColor=black)](https://github.com/Project-Holon/eidos/releases/latest/download/eidos-linux.AppImage)
 [![Android](https://img.shields.io/badge/Android-Download-3DDC84?style=for-the-badge&logo=android&logoColor=white)](https://github.com/Project-Holon/eidos/releases/latest/download/eidos-android.apk)
 [![iOS](https://img.shields.io/badge/iOS-Download-147EFB?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/Project-Holon/eidos/releases/latest/download/eidos-ios.ipa)
 
-Click your system to download the launcher. It installs eidos and keeps it
-up to date. You need your own copy of Pokémon Black or White. The builds
-are not signed: on Windows, choose "More info" then "Run anyway"; on macOS
-(Apple silicon), open `READ ME FIRST.txt` in the disk image, which has the
-one Terminal line macOS needs before it opens the launcher; on Linux, make
-the AppImage executable and run it.
+### Desktop (Windows, macOS, Linux)
 
-On Android (8 or later), install the APK and allow installs from that
-source when Android asks. On iPhone and iPad (iOS 15 or later), the IPA is
-not signed: install it with a sideloading tool such as AltStore or
-Sideloadly and your own Apple ID.
+The desktop launcher installs and updates eidos, manages your ROMs, and installs mods. Because builds are unsigned:
 
-## Status
+- **Windows:** Click **More info** → **Run anyway** if SmartScreen prompts you.
+- **macOS (Apple Silicon):** Follow the single Terminal command in `READ ME FIRST.txt` inside the disk image to clear the quarantine attribute before opening.
+- **Linux:** Mark the `.AppImage` as executable (`chmod +x`) and run it.
+- **Steam Deck:** Add the launcher to Steam as a non-Steam game and start it in Game Mode, with the **Gamepad** controller layout. Desktop Mode also works: Steam then sends the controller as keyboard keys too, and eidos reads one of them at a time.
 
-eidos compiles the game's own decompiled C and runs it natively. It does
-not emulate the DS. It reads the game data from your own ROM; it ships no
-game data.
+### Mobile (Android, iOS)
 
-The game plays from the title screen into the opening hours: new game,
-the first battles, the field menu, saving and
-continuing. Crashes past that point are still expected. Each one is fixed
-in aletheia or here. Graphical issues and inconsistencies are to be
-expected, and multiplayer beyond syncing positions along with hosting and
-lobbies is still experimental.
+- **Android (8.0+):** Install the APK directly and allow installation from unknown sources if prompted.
+- **iOS / iPadOS (15.0+):** Sideload the unsigned IPA using AltStore, Sideloadly, or a similar tool with your Apple ID.
 
-- One screen: the game in a single widescreen window, with its own
-  interface for the field, menus and apps, or the two DS screens as on
-  the console
-- Remaster battles: battles take place on the real map where you are,
-  with the camera placed and checked by hand at about 150 places, and
-  redrawn battle menus
-- 3D drawn on the GPU at a higher internal resolution, with fog, edge
-  marking and anti-aliasing
-- Optional magnification for recognized battle sprites: None, Light or Strong
-  (Scale3x), in Settings > Display (see `docs/pixel-filter.md`)
-- Instant text, and fast forward: hold Space (or Tab, or the pad's left
-  trigger) for 2x, add left Shift for as fast as the computer can; the
-  speed (1.5x to 8x, 2.5x included) and a press/toggle mode are in
-  Settings > Controls, as are both the key and the pad binding
-- Keyboard and gamepad, remappable, and the port's settings inside the
-  game's Options screen
-- 64-bit builds for Windows, macOS (Apple silicon) and Linux, and a
-  launcher that installs, updates itself and manages your ROMs
-- A mod loader (`docs/modding.md`) and a spot editor for battle places
-  (`tools/spot-editor`)
+### Console Homebrew (Switch, PS Vita)
+
+Experimental builds are available on the [Releases page](https://github.com/Project-Holon/eidos/releases) for consoles running custom firmware (currently tested in emulators; see `docs/consoles.md`):
+
+- **Nintendo Switch:** Extract `eidos-<version>-switch.zip` to the root of your SD card, place your `.nds` ROM in `sdmc:/switch/eidos/`, and launch eidos from the Homebrew Menu using title takeover (hold **R** while launching a game) for full memory access.
+- **PlayStation Vita:** Install `eidos-<version>-vita.vpk` via VitaShell and copy your `.nds` ROM to `ux0:data/eidos/`. Hardware-accelerated rendering requires `libshacccg.suprx` in `ur0:data/`.
+
+On first launch, eidos verifies the ROM in that directory and extracts the required game data.
+
+## Supported ROMs
+
+Pokémon Black and Pokémon White (English, French, German, Italian, and Spanish) are supported and verified against known-good dumps during setup. Japanese and Korean releases are not yet supported.
+
+## Status & Features
+
+The main story is playable, though crashes and visual glitches can still occur. Please report bugs via the issue tracker or Discord so they can be fixed here or upstream in aletheia.
+
+- **Single-Screen & Dual-Screen Modes:** Play in a unified widescreen window with adapted UI layouts for the overworld, battles, menus, and C-Gear/Pokédex apps, or use the classic dual-screen DS layout.
+- **Remaster Battles:** Battles take place directly in the surrounding overworld map, using hand-tuned camera placements across ~150 locations.
+- **Hardware-Accelerated 3D:** High-resolution internal rendering with fog, edge marking, and anti-aliasing. Uses OpenGL by default, with native backends for Direct3D 12, Metal, and Vulkan.
+- **Display & Speed Controls:** Native refresh-rate VSync, instant text, and fast-forward (`Tab` for 2× speed, `Left Shift + Tab` for uncapped).
+- **Pixel Art Filtering:** Optional magnification filter (None, Light / Smooth Bilinear, Strong / Scale3x) in Settings > Display.
+- **Input & Settings:** Remappable keyboard, gamepad, and touch controls, with port settings integrated directly into the in-game Options menu.
+- **Mod Support:** Built-in mod loader supporting asset overrides, rule tweaks, and code mods (`docs/modding.md`), browsable from the launcher's mod index.
+- **Multiplayer & WFC (Experimental):** Co-op overworld presence, online Union Room trades and battles, and Mystery Gift distribution via a custom relay server.
+- **Spot Editor:** Tooling for authoring and previewing battle camera placements (`tools/spot-editor`).
 
 ## Milestones
 
-- [x] **Milestone 1**: Portability
-  - [x] One 32-bit reference build, warning-free on GCC, Clang and MSVC
-  - [x] A 64-bit build (needs the 64-bit-ready source from aletheia)
-- [x] **Milestone 2**: Platform layer (SDL3)
-  - [x] Window, keyboard, gamepads, touch screen with the mouse
-  - [x] Audio output and frame pacing at the DS's 59.83 Hz
-  - [x] The game's own boot and scheduler run every frame
-- [x] **Milestone 3**: 2D engine
-  - [x] Backgrounds, sprites, affine layers, windows and blending
-  - [x] Both screens drawn from the hardware state the game writes
-- [ ] **Milestone 4**: 3D engine
-  - [x] Geometry engine, textures, models and maps
-  - [x] GPU renderer with fog, edge marking and anti-aliasing
-  - [ ] Checked pixel for pixel against a real DS
-- [ ] **Milestone 5**: Audio
-  - [x] Sequencer, instruments, PCM, ADPCM and PSG channels
-  - [x] Music, sound effects and cries from the game's own sound calls
-  - [ ] Checked against a real DS's output
-- [ ] **Milestone 6**: Data
-  - [x] First-run setup: pick your ROM, it is checked and extracted
-  - [x] File layer with mod overrides
-  - [ ] Readable formats for the extracted data
-- [ ] **Milestone 7**: Gameplay
-  - [x] Field, battles, menus and saves in the opening hours
-  - [ ] Fully playable from new game to credits
-- [ ] **Milestone 8**: Modding and enhancements
-  - [x] Higher internal resolution
-  - [x] Settings screen
-  - [x] One-screen widescreen layout and Remaster battles
-  - [ ] Stable mod API and documented data formats
-- [ ] **Milestone 9**: Packaging
-  - [x] Windows, macOS and Linux builds, with a launcher
-  - [ ] Android and iOS
-- [ ] **Milestone 10**: Pokémon White
+See the [milestones page](https://github.com/Project-Holon/eidos/milestones) for what is planned for each version and what is in progress.
 
-## Requirements
+## Controls
 
-- A checkout of aletheia next to this one, at the revision in
-  `docs/aletheia-pin.md`
-- Your own dump of Pokémon Black (USA/Europe)
-- CMake 3.16 or later, Ninja, Python 3.11 or later
-- A 32-bit compiler: MinGW-w64 GCC (`i686-w64-mingw32-gcc`) or MSVC x86
-  (the 64-bit build needs more: `docs/building.md`)
-- SDL3 (`python tools/fetch_sdl.py` downloads it on Windows)
-
-## Building
-
-```bash
-cmake -S . -B build -G Ninja \
-    -DCMAKE_TOOLCHAIN_FILE=cmake/ilp32-toolchain.cmake \
-    -DALETHEIA_ROOT=../aletheia -DEIDOS_BOOT=ON -DEIDOS_OVERLAYS=ALL
-cmake --build build --target eidos_boot
-ctest --test-dir build
-```
-
-`docs/building.md` has every option, the other compilers and the 64-bit
-build.
-
-## Running
-
-Start `eidos_boot`. The first time, a setup window asks for your ROM and
-extracts it. Saves go to `%APPDATA%\eidos\saves` on Windows.
+Default keyboard controls match the DS layout:
 
 | DS | Key | DS | Key |
-| --- | --- | --- | --- |
-| D-pad | Arrow keys | START | Return |
+|---|---|---|---|
+| D-Pad Up | Up arrow | D-Pad Down | Down arrow |
+| D-Pad Left | Left arrow | D-Pad Right | Right arrow |
 | A | X | B | Z |
 | X | S | Y | A |
 | L | Q | R | E |
-| SELECT | Right Shift | Touch | Left mouse button |
+| START | Enter | SELECT | Right Shift |
+| Touch | Left click | | |
 
-Space or Tab: fast forward (the pad's left trigger does the same; hold, or
-press once in the toggle mode; speed in Settings > Controls).
-Alt+Return: fullscreen. F12: screenshot.
+**Shortcuts:** `Space` or `Tab` (fast forward, pad's left trigger does the same), `Alt + Return` (fullscreen), `F12` (screenshot).
+
+Save files are stored in:
+- **Windows:** `%LOCALAPPDATA%\eidos\saves`
+- **macOS:** `~/Library/Application Support/eidos/saves`
+- **Linux:** `~/.local/share/eidos/saves`
+- **Android:** Internal app storage (`files/saves`)
+- **iOS:** App Documents directory
+- **Switch:** `sdmc:/switch/eidos/saves`
+- **PS Vita:** `ux0:data/eidos/saves`
 
 ## Community
 
-Join the [Project Holon Discord](https://discord.gg/Fpyemx4qp) for troubleshooting, bug reports, multiplayer matchmaking, and development updates.
-
-## Documentation
-
-| File | Topic |
-| --- | --- |
-| `docs/architecture.md` | How eidos is put together, and how it uses aletheia |
-| `docs/runtime.md` | Frame loop, scheduler, heap, platform layer, the boot |
-| `docs/engine-2d.md` | The 2D engine |
-| `docs/engine-3d.md` | The 3D engine |
-| `docs/audio.md` | The audio engine and the ARM7 sound driver |
-| `docs/files.md` | File layer, overlays, first-run extractor |
-| `docs/building.md` | Every build option, compiler and platform |
-| `docs/milestones-detail.md` | The milestones item by item, with evidence |
-| `docs/status.md` | What is done and what is left |
-| `docs/unified-view.md` | One-screen composition rules: layers, canvas, input, placeholders |
-| `docs/unified-view-inventory.md` | Every screen and element, with its one-screen composition strategy |
-| `docs/unified-view-plan.md` | Implementation order and tests for the one-screen view |
-| `docs/modding.md` | Mods |
-
-## Legal
-
-MIT (`LICENSE`). This repository contains no game data and no game source:
-it compiles the source from aletheia and reads data extracted from your own
-ROM. A release holds the built program and no game data. See `LEGAL.md`. Pokémon and Nintendo DS are trademarks of
-Nintendo; the game belongs to Nintendo, Creatures Inc. and GAME FREAK inc.
+- **Discord:** [Join the server](https://discord.gg/Fpyemx4qp)
+- **Translations:** [Translate eidos](https://crowdin.com/project/eidos)
